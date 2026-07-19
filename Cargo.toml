@@ -1,0 +1,13 @@
+[package]
+name = "klend-indexer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+bs58 = "0.5.1"
+futures = "0.3.33"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio = { version = "1.53.0", features = ["full"] }
+yellowstone-grpc-client = "13.2.1"
+yellowstone-grpc-proto = "12.5.0"
