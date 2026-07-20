@@ -85,3 +85,34 @@ If this ever becomes multi-machine or multi-person, move to **1Password CLI** (`
 which keeps secret *references* in a committed file, injects real values only for the process
 duration, and redacts secrets that get printed to stdout. Keychain is the right call while this
 is one developer on one Mac; `op` is the right call the moment it isn't.
+
+---
+
+## ClickHouse password (added day 2)
+
+Second secret, same mechanism as the Alchemy key: macOS Keychain, injected per-process,
+never on disk.
+
+```bash
+security add-generic-password -a "$USER" -s klend-clickhouse-password -w
+```
+
+`ch.sh` reads it and exports `CLICKHOUSE_PASSWORD` only for its own process, where
+`docker-compose.yml` picks it up by variable substitution. The compose file uses
+`${CLICKHOUSE_PASSWORD:?...}`, so an unset password **aborts the container** rather than
+silently starting a passwordless database — a fallback that looks like success is how a dev
+shortcut becomes the deployed configuration.
+
+Queries run *inside* the container via `docker compose exec`, with the password passed as an
+environment variable rather than `--password` on the command line. A command-line password is
+visible in the container's argv to both `ps` and `docker inspect`.
+
+**Setup note.** `security add-generic-password -w` prompts twice (value, then confirmation), so
+a non-interactive store must feed the value twice on stdin. Using the shell **builtin** `printf`
+for that matters: a builtin forks no process, so the secret never appears in any argv.
+
+```bash
+pw=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)
+printf '%s\n%s\n' "$pw" "$pw" | security add-generic-password -a "$USER" -s klend-clickhouse-password -w
+unset pw
+```

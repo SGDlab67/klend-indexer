@@ -10,3 +10,6 @@
 
 # OS / editor noise
 .DS_Store
+
+# ClickHouse env file (compose reads it automatically); password lives in the Keychain
+.env

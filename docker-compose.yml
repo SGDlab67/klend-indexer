@@ -1,0 +1,76 @@
+# Local ClickHouse for klend-indexer.
+#
+# Artefact 1's definition of done is "a stranger can `docker compose up`, point
+# it at an RPC endpoint, and have queryable data within ten minutes" — so this
+# file is a deliverable, not scaffolding. It should stay runnable by someone
+# who has never seen the project.
+
+services:
+  clickhouse:
+    # PINNED, not `latest`. A floating tag means the database version changes
+    # under you on an unrelated `docker pull`, and ClickHouse ships behaviour
+    # changes in minor releases. Same discipline as pinning a crate version:
+    # a reproducible build you can debug beats a current one you can't.
+    image: clickhouse/clickhouse-server:25.3
+    container_name: klend-clickhouse
+    restart: unless-stopped
+
+    ports:
+      # ⚠️  The 127.0.0.1 prefix is load-bearing, not decoration.
+      # `- "8123:8123"` binds 0.0.0.0 — reachable by anything on the LAN, and on
+      # macOS that silently includes coffee-shop wifi. Explicit loopback means
+      # the only way in is from this machine.
+      - "127.0.0.1:8123:8123"   # HTTP  — clickhouse-client --port 8123, curl, UIs
+      - "127.0.0.1:9000:9000"   # native protocol — what the Rust client will use
+
+    environment:
+      CLICKHOUSE_DB: klend
+      CLICKHOUSE_USER: klend
+      # No default. An unset password must FAIL the container rather than quietly
+      # producing a passwordless database — a fallback that looks like success is
+      # exactly how a dev shortcut becomes the production configuration.
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set via ./ch.sh, which reads the Keychain}
+      # Without this the `klend` user cannot create/drop tables in its own database.
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+
+    volumes:
+      # Named volume, NOT a bind mount into the repo. A bind mount would drop
+      # gigabytes of database files inside a git working tree, where they are one
+      # forgotten .gitignore rule away from a commit.
+      - klend-ch-data:/var/lib/clickhouse
+      - klend-ch-logs:/var/log/clickhouse-server
+      # Runs ONCE, on first boot of an empty volume. It does not re-run on
+      # restart, and it does not apply to a volume that already exists — so
+      # editing schema/ after the first `up` has no effect until the volume is
+      # removed. Real migrations are a later problem; this is the bootstrap.
+      - ./schema:/docker-entrypoint-initdb.d:ro
+
+    ulimits:
+      # ClickHouse opens a lot of files; the Docker default of 1024 is far too
+      # low and surfaces as confusing "too many open files" mid-merge.
+      nofile:
+        soft: 262144
+        hard: 262144
+
+    # Docker Desktop has 8 GB total on this machine. Left alone ClickHouse sizes
+    # its caches against what it *sees*, then competes with the compiler and the
+    # indexer for the same RAM. Capping it here keeps a bad query from taking the
+    # laptop down with it.
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+    healthcheck:
+      # `depends_on: condition: service_healthy` needs this to gate the indexer
+      # later. Without a healthcheck, "container started" is not "server accepts
+      # queries" — a race that presents as an intermittent connection refusal.
+      test: ["CMD", "clickhouse-client", "--user", "klend", "--password", "${CLICKHOUSE_PASSWORD}", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  klend-ch-data:
+  klend-ch-logs:
