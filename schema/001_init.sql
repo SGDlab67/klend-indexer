@@ -2,10 +2,7 @@
 --
 -- Runs ONCE, on first boot of an empty data volume. It does NOT re-run on
 -- container restart. Editing this file after the first `docker compose up` has
--- no effect until the volume is destroyed — which is why the week-2 tables are
--- defined here now rather than added later, even though nothing writes to them
--- yet. Deferring them would cost a volume rebuild, and §8c is explicit that
--- retrofitting the resume path is worse than building it in.
+-- no effect until the volume is destroyed (`./ch.sh nuke`).
 
 CREATE DATABASE IF NOT EXISTS klend;
 
@@ -83,37 +80,3 @@ PARTITION BY intDiv(slot, 10000000);
 -- It serves Phase 2's "all accounts around slot N" poorly, since slot is not the
 -- leading column. The fix is a projection or a second ordering, and it should be
 -- added when Phase 2's real queries exist — not designed speculatively now.
-
--- ---------------------------------------------------------------------------
--- Resume checkpoint (§8c). Not yet written to.
--- ---------------------------------------------------------------------------
--- On startup: gap = tip - last_processed_slot. Under ~5500 slots, resume via
--- from_slot; over, stream from the tip immediately and record the gap below.
-CREATE TABLE IF NOT EXISTS klend.ingest_checkpoint
-(
-    stream              LowCardinality(String),
-    last_processed_slot UInt64,
-    updated_at          DateTime64(3) DEFAULT now64(3)
-)
--- Latest checkpoint per stream wins. Here the version column does real work:
--- concurrent or retried writers can collide on the same key with genuinely
--- different values, unlike account_updates.
-ENGINE = ReplacingMergeTree(updated_at)
-ORDER BY stream;
-
--- ---------------------------------------------------------------------------
--- Known gaps (§8c). Not yet written to.
--- ---------------------------------------------------------------------------
--- "Never silently skip. A gap you know about is a backlog item; a gap you don't
--- is a corrupt dataset." Every gap gets a row, and `filled_at` is nullable so an
--- unfilled gap is a different SHAPE from a filled one, not a sentinel value.
-CREATE TABLE IF NOT EXISTS klend.slot_gaps
-(
-    from_slot   UInt64,
-    to_slot     UInt64,
-    reason      LowCardinality(String),
-    detected_at DateTime64(3) DEFAULT now64(3),
-    filled_at   Nullable(DateTime64(3))
-)
-ENGINE = ReplacingMergeTree(detected_at)
-ORDER BY (from_slot, to_slot);
