@@ -111,3 +111,126 @@ Implications:
 
 Size→type mapping is inference from size and update frequency. **Confirm via the Anchor
 discriminator (first 8 bytes) on day 3** before relying on it.
+
+---
+
+## 2026-07-19 — Day 2
+
+Goal: replace the day-1 size→type *hypothesis* with the Anchor discriminator, which is a fact.
+
+### Discriminators are derivable — so derive them, don't transcribe them
+Anchor writes `sha256("account:<StructName>")[..8]` at offset 0 of every account it initialises.
+The first draft of the type table hardcoded those 8 bytes per type as hex literals. That is the
+same defect shape as a hand-summed `LEN` constant: a transcription that can silently disagree
+with its source, where the failure mode is *mislabelled data*, not a compile error.
+
+Rewrote it to store the NAMES and derive the discriminators at startup via `sha2` + `LazyLock`.
+The table is now structurally incapable of disagreeing with the names it claims to describe.
+
+Second-order benefit: a guessed name that's wrong simply never matches anything on the wire, so
+it fails by being **absent** from the output. It cannot mislabel a real account as something else.
+
+### `Option<&str>` would have hidden the interesting case
+The classifier first returned `Option<&'static str>` — `None` for both "payload shorter than 8
+bytes" and "8-byte tag we can't name". Those are completely different facts: the second is the
+open research question from day 1 (four layouts, two named), the first would be a protocol
+surprise. A shared `None` lets the interesting one hide inside the boring one.
+
+Replaced with a three-variant enum (`Known` / `Unknown([u8;8])` / `Untagged{len}`). `Unknown`
+carries the raw bytes, so an unnamed type prints as hex that can be looked up rather than
+disappearing into a catch-all. Every consumer now gets an exhaustive `match`.
+
+**Lesson:** an enum moves the assumption up the ladder — from "checked by remembering" to
+"checked by the compiler, exhaustively".
+
+`From`, not `TryFrom`: classification is total, and an unknown account type is *data to record*,
+not an error to propagate. Behind `TryFrom` a stray `?` would turn the most interesting finding
+into "stream ends".
+
+### The orphan problem, fixed at the source
+Day 1 tried to time-box from outside and produced two orphans. The fix is for the process to
+bound **itself**: `KLEND_SAMPLE_SLOTS` stops the loop after N slots. No signal to deliver, no
+process group to get wrong, nothing to survive. Verified dead after both runs.
+
+A malformed value aborts rather than defaulting to "run forever" — on a bandwidth-billed stream
+a fallback that looks like success is a financial event, not a typo.
+
+Also: `ps aux | grep klend-indexer` is a **bad liveness check here** — it matched 5 Cursor helper
+processes that merely carry the project name in argv. Use `grep "[t]arget/debug/klend-indexer"`.
+
+### The budget bug: one word, two quantities
+First run with `KLEND_SAMPLE_SLOTS=150` was still going after 3 minutes. Cause: "slots" meant two
+different things in the same file.
+
+| quantity | meaning | is it a clock? |
+|---|---|---|
+| slot **span** (`last - first`) | chain time elapsed | **yes** — ~400 ms/slot |
+| slots **with updates** | slots carrying ≥1 klend update | no — it's a finding |
+
+The budget checked the second while `elapsed_secs` used the first. Since only ~6.5% of slots
+carry klend updates, `150` bought ~2300 slots of chain time — a ~15× overrun, on a metered
+stream, in the direction of spending more. Renamed both, budgeted on the span.
+
+**Lesson:** when two quantities share a name, the one that is *wrong* is the one nobody rechecks.
+This is the same family as day 1's wall-clock-vs-slot error, one level up.
+
+### Custom `Display` silently ignores `{:<22}`
+The summary table came out ragged. A custom `Display` impl that calls `write!(f, ...)` drops width
+and alignment specs on the floor — padding is applied by `Formatter::pad`, which `write!` never
+calls. Fix: build the string, then `f.pad(&text)`. Cosmetic here, but it fails **silently**, which
+is the part worth remembering.
+
+---
+
+## Day 2 measurements — 774-slot span (~310 s), CONFIRMED commitment
+
+| kind (by discriminator) | data_len | updates | share |
+|---|---|---|---|
+| `Reserve` | 8624 | 186 | 86.9% |
+| `Obligation` | 3344 | 26 | 12.2% |
+| `UserMetadata` | 1032 | 2 | 0.9% |
+
+**Day-1 hypotheses CONFIRMED.** 8624 = `Reserve`, 3344 = `Obligation` — now verified against the
+discriminator rather than inferred from size and frequency.
+
+**The 1032-byte mystery type is `UserMetadata`.** One of day 1's two unidentified layouts is named.
+
+**The 4664-byte type did not appear at all** in 774 slots. It was 0.4% of the day-1 sample and is
+rarer than a 5-minute window catches. Still unidentified — none of the eight candidate names
+matched anything, so it is a klend struct not in the guessed list. Open question.
+
+### Correction: "reserves rewrite every slot" is FALSE
+The README claimed reserves rewrite constantly — interest accrual + oracle refresh, every slot.
+Measured: **only 50 of 774 slots (6.5%) carried any klend update at all.** klend writes are
+bursty, not continuous. Both samples agree (18/456 and 50/774).
+
+This matters beyond tidiness: a per-slot write assumption would make any "expected rows per day"
+capacity estimate ~15× too high, and would make a gap in the data look normal when it isn't.
+
+### Correction: bandwidth is lower than day 1 estimated
+Measured **5.3 KB/s** payload over a clean, self-terminated 310 s window, vs the day-1 figure of
+~10 KB/s. The day-1 number came from an orphaned run whose duration was inferred from a corrupted
+wall clock, so it was never trustworthy.
+
+Caveat, stated rather than smoothed over: day 1's implied rate (~1.5 updates/s) is still ~2× this
+sample's (0.69 updates/s), and that gap is **not fully explained**. Candidate causes: genuine
+market-activity variance, or day 1's slot count meaning something different than assumed. Not
+resolved — do not treat either figure as the steady-state rate until a longer sample settles it.
+
+At 5.3 KB/s: ~13 GB/month ≈ $1/month at $80/TB. Still trivial; the point is the method, not the bill.
+
+### Correction to the day-1 `write_version` note (storage design)
+Day 1 concluded a `(pubkey, slot)` dedup key "would silently keep an arbitrary one of several
+intra-slot versions". Imprecise: with `write_version` as the ReplacingMergeTree version column it
+keeps the **highest** `write_version` — deterministic, not arbitrary. It is arbitrary only with no
+version column at all.
+
+The real point survives, and is stronger stated correctly: **we don't want latest-per-slot at all.**
+Liquidation forensics needs account state on both sides of an instruction, so the intra-slot
+versions are the signal, not noise to be collapsed. That makes the key `(pubkey, slot, write_version)`
+— under which ReplacingMergeTree retains every version and dedupes only *replayed inserts* of an
+identical row. That replay-idempotency is exactly what makes the §8c reconnect design safe, so
+the choice is load-bearing twice over.
+
+Worth being precise about because the two configurations look nearly identical in DDL and differ
+in what data they permanently destroy.

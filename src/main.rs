@@ -12,6 +12,10 @@
 //! FOLLOWS it. Both render into `cargo doc`.
 
 use std::collections::HashMap;
+use std::fmt;
+use std::sync::LazyLock;
+
+use sha2::{Digest, Sha256};
 
 // `anyhow::Result<T>` is shorthand for `Result<T, anyhow::Error>`. anyhow::Error
 // can absorb ANY error type that implements std::error::Error, which is why a
@@ -43,6 +47,133 @@ use yellowstone_grpc_proto::geyser::{
     subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest,
     SubscribeRequestFilterAccounts,
 };
+
+/// Candidate klend account struct names.
+///
+/// This is a list of NAMES, not of discriminator bytes, and that is the whole
+/// point. Anchor writes `sha256("account:<StructName>")[..8]` at offset 0 of
+/// every account it initialises, so the discriminator is *derivable* from the
+/// name — and a derived constant is structurally incapable of disagreeing with
+/// its source, while a hand-transcribed one is a typo waiting to mislabel data.
+/// (Same rule as `LEN = size_of::<Self>()` vs. a hand-summed field total: derive
+/// the constant, never write it out.)
+///
+/// These names are still a GUESS — they come from klend's public struct names,
+/// not from an IDL we've verified. That's deliberate and safe: a wrong guess
+/// simply never matches any account on the wire, so it fails by being absent
+/// from the output. It cannot mislabel a real account as something it isn't.
+const CANDIDATE_ACCOUNTS: &[&str] = &[
+    "Reserve",
+    "Obligation",
+    "LendingMarket",
+    "ReferrerTokenState",
+    "UserMetadata",
+    "ReferrerState",
+    "ShortUrl",
+    "GlobalConfig",
+];
+
+/// `discriminator -> struct name`, derived once from [`CANDIDATE_ACCOUNTS`].
+///
+/// `LazyLock` (std, stable since 1.80) runs the initialiser on first access and
+/// shares the result across threads — the standard-library replacement for the
+/// old `lazy_static!` / `once_cell` crates. We can't build this at compile time
+/// because sha256 isn't const-evaluable here, and we don't want to rebuild it
+/// per account update: it is read on the hot path, once per message.
+static DISCRIMINATORS: LazyLock<HashMap<[u8; 8], &'static str>> = LazyLock::new(|| {
+    CANDIDATE_ACCOUNTS
+        .iter()
+        .map(|name| {
+            let hash = Sha256::digest(format!("account:{name}").as_bytes());
+            // The slice->array conversion cannot fail: sha256 is always 32 bytes,
+            // so `[..8]` is always in range. `expect` documents that invariant
+            // rather than hiding it behind a silent fallback.
+            let disc: [u8; 8] = hash[..8].try_into().expect("sha256 digest is 32 bytes");
+            (disc, *name)
+        })
+        .collect()
+});
+
+/// What an account's leading bytes tell us about its type.
+///
+/// Three outcomes, three *shapes* — deliberately not `Option<&str>`.
+///
+/// `Option` would collapse two genuinely different facts into one `None`:
+/// "this account is too short to carry a discriminator" and "this is a klend
+/// account whose type we haven't named yet". The second is a research finding
+/// (there are four layouts under the klend owner and we've only named two of
+/// them — see NOTES.md); the first would be a protocol surprise. A shared
+/// `None` would let the interesting one hide inside the boring one.
+///
+/// Because this is an enum, every consumer gets an exhaustive `match`: the
+/// compiler produces the list of places to update when a variant is added,
+/// rather than us grepping for them. That is the difference between an
+/// assumption checked at compile time and one checked by remembering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum AccountKind {
+    /// Discriminator matched a name in [`CANDIDATE_ACCOUNTS`].
+    Known(&'static str),
+    /// Well-formed 8-byte tag, but not one we can name. Carries the raw bytes
+    /// so the finding is actionable — an unnamed type prints as hex we can look
+    /// up, instead of vanishing into a catch-all bucket.
+    Unknown([u8; 8]),
+    /// Fewer than 8 bytes of payload — cannot carry a discriminator at all.
+    /// Not expected from an Anchor program; if this ever appears it is a real
+    /// finding, which is exactly why it isn't folded into `Unknown`.
+    Untagged { len: usize },
+}
+
+// `From` rather than `TryFrom`: classification is TOTAL — every possible byte
+// slice lands in exactly one variant, so there is no error case to report. The
+// `TryFrom`-as-dispatch-table pattern is the right shape when an unrecognised
+// tag is a *failure* (an unknown instruction byte must abort). Here it isn't:
+// an unknown account type is data we want to record and count, not an error to
+// propagate. Using `TryFrom` would push "unknown" into an `Err` that a stray `?`
+// could turn into "stream ends" — losing the finding to error handling.
+impl From<&[u8]> for AccountKind {
+    fn from(data: &[u8]) -> Self {
+        let Some(head) = data.get(..8) else {
+            return AccountKind::Untagged { len: data.len() };
+        };
+        let disc: [u8; 8] = head.try_into().expect("slice of exactly 8 bytes");
+
+        match DISCRIMINATORS.get(&disc) {
+            Some(name) => AccountKind::Known(name),
+            None => AccountKind::Unknown(disc),
+        }
+    }
+}
+
+impl fmt::Display for AccountKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // ⚠️  `write!(f, ...)` here would IGNORE width and alignment: `{kind:<22}`
+        // silently formats as if no width were given, because padding is applied
+        // by `Formatter::pad`, not by the `{}` machinery around a custom impl.
+        // The first version of this did exactly that and produced a ragged
+        // summary table. Routing through `f.pad` is what makes a custom Display
+        // honour the same format specs a `&str` would.
+        let text = match self {
+            AccountKind::Known(name) => (*name).to_owned(),
+            // Prefixed so an unnamed type can never be mistaken for a named one
+            // in the output, at a glance or by a downstream parser.
+            AccountKind::Unknown(disc) => format!("unknown:{}", hex8(disc)),
+            AccountKind::Untagged { len } => format!("untagged:{len}b"),
+        };
+        f.pad(&text)
+    }
+}
+
+/// Lowercase hex for a discriminator. std has no hex formatter for slices, and
+/// pulling a crate for eight bytes isn't worth the dependency.
+fn hex8(bytes: &[u8; 8]) -> String {
+    use fmt::Write as _;
+    bytes.iter().fold(String::with_capacity(16), |mut s, b| {
+        // Writing to a String is infallible; the Result exists only because the
+        // `Write` trait is shared with fallible sinks like files and sockets.
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
 
 /// Kamino Lend production mainnet program ID (plan §8b).
 ///
@@ -196,6 +327,57 @@ async fn main() -> Result<()> {
     eprintln!("subscribed to klend {KLEND_PROGRAM}; waiting for updates…");
 
     // ---------------------------------------------------------------------
+    // 4b. SAMPLE BUDGET — the fix for day 1's orphaned-process incident.
+    // ---------------------------------------------------------------------
+    // Day 1 tried to time-box a run from OUTSIDE (`alarm N; exec ./run.sh`).
+    // That killed run.sh and cargo, but `cargo run` execs the binary as a child
+    // that OUTLIVED its parent: two orphans streamed billable data for ~19 and
+    // ~9 minutes after being "stopped", and corrupted two measurements.
+    //
+    // The robust fix is for the process to bound ITSELF. No signal to deliver,
+    // no process group to get wrong, nothing to survive.
+    //
+    // Budget is in SLOTS, not seconds, for the second day-1 lesson: derive
+    // elapsed time from the DATA, not the wall clock. Slots advance at ~400 ms
+    // and are produced by the chain, so a slot-counted sample is immune to the
+    // very class of error that corrupted the first measurement. Unset = run
+    // forever, which is the eventual 24/7 mode (§7d).
+    let slot_budget: Option<u64> = match std::env::var("KLEND_SAMPLE_SLOTS") {
+        Ok(raw) => Some(
+            raw.parse()
+                // A malformed budget must ABORT, never silently fall back to
+                // "run forever" — on a bandwidth-billed stream, a fallback that
+                // looks like success is a financial event, not a typo.
+                .with_context(|| format!("KLEND_SAMPLE_SLOTS must be a slot count, got {raw:?}"))?,
+        ),
+        Err(_) => None,
+    };
+
+    // Tally keyed by (kind, data_len): the pairing is the actual research
+    // question. Keying on kind alone would hide a type with two layouts (a
+    // versioned struct); on len alone it would merge two types that happen to
+    // share a size — which is precisely the inference day 1 could not rule out.
+    let mut tally: HashMap<(AccountKind, usize), u64> = HashMap::new();
+    let mut total_bytes: u64 = 0;
+    let mut first_slot: Option<u64> = None;
+    let mut last_slot: u64 = 0;
+
+    // TWO DIFFERENT QUANTITIES, deliberately not sharing the word "slots".
+    //
+    // The first sample run conflated them and the budget silently meant
+    // something ~25x longer than intended:
+    //
+    //   slot SPAN            = last_slot - first_slot. Chain time. The clock.
+    //   slots WITH UPDATES   = slots carrying >=1 klend update. A finding.
+    //
+    // They are wildly different because klend updates are bursty, not
+    // per-slot: the first run saw 18 slots-with-updates across a 456-slot
+    // span. Budgeting on the second means "150 slots" buys 150 *active* slots
+    // — an unbounded and unpredictable amount of real time, on a
+    // bandwidth-billed stream. Only the span is a clock.
+    let mut slots_with_updates: u64 = 0;
+
+    // ---------------------------------------------------------------------
     // 5. THE STREAM LOOP
     // ---------------------------------------------------------------------
     // `.next()` yields Option<...>: `Some` per message, `None` when the stream
@@ -225,8 +407,30 @@ async fn main() -> Result<()> {
                 // wire even though it should never occur in practice.
                 let Some(info) = update.account else { continue };
 
+                // Classify BEFORE printing: the type tag is now the primary
+                // field of a record, not an afterthought appended to it.
+                let kind = AccountKind::from(info.data.as_slice());
+
+                *tally.entry((kind, info.data.len())).or_insert(0) += 1;
+                total_bytes += info.data.len() as u64;
+
+                // Slot accounting. Updates arrive in slot order, so a change in
+                // `update.slot` marks a slot boundary — no set of seen slots to
+                // keep in memory, which matters for a process meant to run for
+                // months rather than minutes.
+                if first_slot.is_none() {
+                    first_slot = Some(update.slot);
+                    slots_with_updates = 1;
+                } else if update.slot != last_slot {
+                    slots_with_updates += 1;
+                }
+                last_slot = update.slot;
+
+                // The clock: chain slots elapsed since the first update.
+                let slot_span = last_slot.saturating_sub(first_slot.unwrap_or(last_slot));
+
                 println!(
-                    "slot={} pubkey={} data_len={} write_version={}",
+                    "slot={} pubkey={} kind={kind} data_len={} write_version={}",
                     // Which slot this state belongs to. Under CONFIRMED this can
                     // still be rolled back by a fork.
                     update.slot,
@@ -245,6 +449,14 @@ async fn main() -> Result<()> {
                     // ReplacingMergeTree ORDER BY in week 2 — dedup for free.
                     info.write_version,
                 );
+
+                // Self-imposed stop. Breaking (not `return`) means the summary
+                // below runs on the sampling path too — a sample that ends
+                // without reporting what it measured is a wasted spend.
+                if slot_budget.is_some_and(|budget| slot_span >= budget) {
+                    eprintln!("slot budget reached (span {slot_span}); stopping");
+                    break;
+                }
             }
 
             // Keepalive. The server pings to hold the connection open through
@@ -259,8 +471,52 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Reached only when the stream ends cleanly. Today that means the process
-    // exits; after week 2's reconnect work it should be nearly unreachable,
-    // because the indexer is meant to run 24/7 from then on (§7d).
+    // ---------------------------------------------------------------------
+    // 6. SUMMARY — to stderr, so it never pollutes a captured stdout sample.
+    // ---------------------------------------------------------------------
+    // Reached when the slot budget is hit, or when the stream ends cleanly.
+    // After week 2's reconnect work the second case should be nearly
+    // unreachable, because the indexer is meant to run 24/7 from then on (§7d).
+    let total_updates: u64 = tally.values().sum();
+    let slot_span = last_slot.saturating_sub(first_slot.unwrap_or(last_slot));
+    let elapsed_secs = slot_span as f64 * 0.4;
+
+    eprintln!("\n─── sample summary ───");
+    eprintln!(
+        "slots {}..{} — span {slot_span} (~{elapsed_secs:.0}s chain time)",
+        first_slot.unwrap_or(0),
+        last_slot,
+    );
+    // Reported separately, and as a ratio, because the gap between these two is
+    // itself the finding: it says how bursty klend writes are.
+    let density = if slot_span == 0 {
+        0.0
+    } else {
+        100.0 * slots_with_updates as f64 / slot_span as f64
+    };
+    eprintln!("{slots_with_updates} slots carried updates ({density:.1}% of span)");
+    eprintln!("{total_updates} updates, {total_bytes} payload bytes");
+    if elapsed_secs > 0.0 {
+        eprintln!(
+            "~{:.1} KB/s payload (bandwidth is what Alchemy bills — §8d)",
+            total_bytes as f64 / 1024.0 / elapsed_secs
+        );
+    }
+
+    // Sort by frequency so the dominant type is the first thing read — the
+    // reserve-churn ratio is the finding that drives the whole cost argument.
+    let mut rows: Vec<_> = tally.into_iter().collect();
+    rows.sort_by_key(|&((kind, len), count)| (std::cmp::Reverse(count), kind, len));
+
+    eprintln!("{:<22} {:>9} {:>8} {:>7}", "kind", "data_len", "updates", "share");
+    for ((kind, len), count) in rows {
+        let share = if total_updates == 0 {
+            0.0
+        } else {
+            100.0 * count as f64 / total_updates as f64
+        };
+        eprintln!("{kind:<22} {len:>9} {count:>8} {share:>6.2}%");
+    }
+
     Ok(())
 }
