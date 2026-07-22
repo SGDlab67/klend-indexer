@@ -234,3 +234,114 @@ the choice is load-bearing twice over.
 
 Worth being precise about because the two configurations look nearly identical in DDL and differ
 in what data they permanently destroy.
+
+---
+
+## 2026-07-21 — Day 3
+
+Storage layer stood up. No stream work, no insert path — the two halves still do not touch.
+
+### Correction: the version column must NOT be `write_version`
+
+Day 2 concluded the key is `(pubkey, slot, write_version)` **and** "the version column must be
+`write_version`". The first half is right; the second is wrong, and wrong in a way that looks
+correct in the DDL.
+
+ReplacingMergeTree dedupes rows sharing the **full ORDER BY key**, then uses the version column
+only to pick a winner among them. `write_version` is *in* the sort key — so any two rows that
+collide already have equal `write_version`. Passing it as the version column is a guaranteed tie
+and does exactly nothing.
+
+Follow the logic through and the right answer falls out. Under this key a collision means one
+thing only: the same account version inserted twice, i.e. a **replay after reconnect** (§8c).
+Both copies are byte-identical, so any tiebreak yields the same data — but the column should
+still *state the intent*. `ENGINE = ReplacingMergeTree(ingested_at)`: on replay, keep the most
+recent copy.
+
+**Lesson:** a version column drawn from inside the sort key is always inert. Check whether the
+tiebreak can ever actually differ before believing it does anything.
+
+### Schema init runs once, on an empty volume only
+
+`schema/001_init.sql` is mounted as a docker-entrypoint init script. It executes on **first boot
+of an empty data volume** and never again — not on container restart, not on `docker compose up`
+after a `down`. Editing the file after the first boot has no effect until `./ch.sh nuke` destroys
+the volume.
+
+Wrote that as a header comment in the file itself, because the failure mode is silent: you edit
+the DDL, restart, and query a table that still has the old shape. Cheap to recover from now (zero
+rows); expensive once real data is in.
+
+### Raw `data` is stored on purpose
+
+Storing the undecoded payload alongside the decoded columns looks redundant. It isn't: Yellowstone
+streams the **tip** and cannot re-serve an old slot. Store only decoded columns and every decode
+bug is unrecoverable — the original bytes are gone. Keeping `data` makes decode replayable against
+history instead of one-shot. Relevant right now given the 4664-byte type is still unidentified.
+
+### Derived columns, so the writer cannot get them wrong
+- `data_len` — MATERIALIZED, computed at insert, cannot drift from the payload it describes.
+- `pubkey_b58` — ALIAS, computed at query time, zero storage, so nobody has to remember
+  `base58Encode` by hand.
+- `ingested_at` — DEFAULT `now64(3)`.
+
+None are supplied by the writer. Same principle as deriving the discriminators from struct names
+on day 2: if a value *can* be derived, deriving it removes a class of mislabelling.
+
+`ingested_at` is **our** clock, not a chain timestamp, and must never be used as one — it exists
+to measure ingest lag. Day 1 already lost two measurements to trusting a wall clock over slots.
+
+### Partition on slot, not ingest time
+`PARTITION BY intDiv(slot, 10000000)` ≈ 27 days at 400 ms/slot, so partitions land roughly monthly
+— ClickHouse's preferred coarseness. Partitioning on slot means a backfill of old slots lands in
+the partitions the live stream would have used, instead of scattering across today's. Matters in
+Phase 1 when backfill and live meet.
+
+### Known schema limitation, recorded rather than fixed
+`ORDER BY (pubkey, slot, write_version)` serves "one obligation's history by pubkey" (the week-2
+checkpoint) well, and Phase 2's "all accounts around slot N" **poorly** — slot is not the leading
+column. Fix is a projection or a second ordering. Deliberately not added: §4 names the speculative
+engine as a failure mode, so this waits until Phase 2's real queries exist.
+
+### Secrets, extended to ClickHouse
+Same pattern as `run.sh`: password from macOS Keychain service `klend-clickhouse-password`, never
+on disk or in argv. `ch.sh` wraps it (`up|down|nuke|client|q <SQL>|status`). Compose binds ports to
+`127.0.0.1` only, pins ClickHouse `25.3`, caps memory at 4G, raises `nofile`, and gates readiness
+on a healthcheck. Named volumes, not bind mounts. Also added a read-only MCP user with a
+SELECT-only grant for querying from tools.
+
+### Comments moved out of the code, into the vault
+`src/main.rs` carried ~270 lines of teaching commentary against ~250 lines of code — useful while
+writing it, an obstacle to reading it. Stripped to the comments that stop a bug: the empty-`owner`
+billing trap, `_sink` drop timing, `f.pad` vs `write!`, the rustls provider, slot-based budgeting,
+the `(kind, len)` tally key, `write_version` as idempotency key.
+
+The removed reasoning is preserved in full at
+`~/Note/Zero_Copy/Research/rust-solana-data-career/klend-indexer-phase0-knowledge.md` — Rust
+patterns, type-design decisions, protobuf/prost facts, the money-safety incidents, infra gotchas.
+Nothing was discarded, only relocated.
+
+---
+
+## Handoff — state at travel (2026-07-22)
+
+Relocating Tampa → Corvallis; focused hours resume ~Aug 1.
+
+**Verified clean before packing:** no `target/debug/klend-indexer` process running, Docker daemon
+down, nothing streaming or billing. (Per day 2 — `grep "[t]arget/debug/klend-indexer"`, not a bare
+`grep klend`, which matches Cursor helpers.)
+
+**Where the work stands:** stream half works, store half exists and is empty, the arrow between
+them is unbuilt. That arrow is Block 1 in plan §11d and it is fully specified there — no design
+work is pending, only execution.
+
+**Deliberately NOT started tonight.** Block 1 is only worth anything finished: it needs a
+ClickHouse client dep with the right tokio/TLS features, batching plus flush-on-exit, and
+verification against a **live metered stream**. Starting a billed stream late, on a machine being
+packed, is the exact setup that produced day 1's orphaned-process incident. Half-wired code plus
+ten days away is worse than a clean start against a written spec.
+
+**First action Aug 1:** plan §11d, steps 1–4. The checkpoint table for `last_processed_slot` (step
+3) has no DDL yet — define it then, alongside the code that writes it, so its shape follows the
+writer's needs. Costs nothing to defer: the table is empty now and will still be empty then, so
+`nuke` + `up` remains free.
