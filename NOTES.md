@@ -345,3 +345,81 @@ ten days away is worse than a clean start against a written spec.
 3) has no DDL yet — define it then, alongside the code that writes it, so its shape follows the
 writer's needs. Costs nothing to defer: the table is empty now and will still be empty then, so
 `nuke` + `up` remains free.
+
+---
+
+## Day 4 — Block 1 wired: stream → batched insert → checkpoint (2026-08-01)
+
+Plan §11d, steps 1–4, done. The arrow between the stream half and the store half is built. The §6
+week-1 checkpoint is closed: ran the indexer against a live metered stream, `account_updates` holds
+rows, and an obligation's history is queryable by pubkey.
+
+### The ClickHouse client: `klickhouse` (native protocol), not the `clickhouse` HTTP crate
+The two live options were `clickhouse` 0.15 (ClickHouse Inc., HTTP/8123, RowBinary, a built-in
+`Inserter` that batches and flushes for you) and `klickhouse` 0.15 (native protocol/9000,
+`#[derive(Row)]`, batching hand-rolled). Picked `klickhouse`. The plan already said native/9000, but
+the deciding reason was the learning target, not literal plan-adherence: native means working the
+ClickHouse binary block format directly instead of behind an HTTP abstraction. At klend's throughput
+(~10 KB/s measured this run) the protocol difference is immaterial to performance — this was a
+deliberate depth choice, and the cost is that batching/flush is code we own, not a library `Inserter`.
+
+### How the native insert actually binds — the fact that shaped the code
+`insert_native_block(query, Vec<Row>)`: the client sends the INSERT, the **server** replies with a
+header block carrying the expected columns and their types, and each row is matched to it **by column
+name** (not by field position). Two consequences baked into the code:
+- **Explicit column lists are mandatory here**, not stylistic. `INSERT INTO account_updates FORMAT
+  Native` with no list makes the server's header include every *insertable* column — which includes
+  the `ingested_at` DEFAULT — and the row struct doesn't supply it, so the block is short a column.
+  Naming `(slot, write_version, pubkey, kind, owner, lamports, data)` pins the header to exactly what
+  we send. MATERIALIZED (`data_len`) and ALIAS (`pubkey_b58`) are never insertable, so they're
+  excluded regardless.
+- **Type mappings that aren't obvious:** `FixedString(32)` ← `klickhouse::Bytes` (a `Vec<u8>`
+  wrapper; both CH `String` and `FixedString` are the same `Value::String`). `LowCardinality(String)`
+  ← a plain `String` field; klickhouse serializes it against the server's type hint, no wrapper. And
+  `FixedString` serialization **truncates-or-zero-pads** to width and never errors on a length
+  mismatch — so a malformed pubkey would corrupt silently rather than fail loudly. Real Solana
+  pubkeys are always 32 bytes, so this is fine today, but it's a sharp edge worth remembering.
+
+### Checkpoint table shape followed the writer, as the handoff asked
+`ingest_checkpoint` (schema/002): `stream` (LowCardinality, so a later staging/backfill subscription
+checkpoints independently), `last_slot`, `last_write_version`, `updated_at` DEFAULT. ReplacingMergeTree
+ORDER BY `stream` — collapses to one row per stream, read with FINAL. The high-water mark is the last
+row of each committed batch; since updates arrive in slot order, that's the max seen.
+
+**Resume semantics recorded now so Block 2 can't get them wrong:** resume is from `last_slot`
+**inclusive**, never `last_slot + 1`. A slot can split across two batches, so the tail of `last_slot`
+may be unwritten; re-reading the whole slot re-emits stored rows (harmless dedup via the
+ReplacingMergeTree key), whereas skipping to the next slot would drop that tail — a silent hole. This
+is §8c's "prefer duplicates over holes" made concrete. The write ordering enforces it: **data batch
+first, checkpoint second.** If the batch commits and the checkpoint doesn't, resume rewinds and
+duplicates; the reverse would advance the checkpoint past data that never landed.
+
+### Batching: size OR time, plus flush-on-exit
+`tokio::select!` over the stream and a 2s `interval`. Flush triggers: buffer hits `BATCH_MAX_ROWS`
+(4096), the 2s tick fires, or the loop exits (budget reached / stream ended). The **time trigger is
+not optional** for klend: traffic is bursty (this run: 17 of 169 slots carried updates), so a
+row-count trigger alone would strand a partial batch through a quiet span. The final post-loop flush
+is what stops the last partial batch and its checkpoint being dropped on exit — the same class of
+loss as day 1's orphaned data, closed by construction.
+
+### Sampling path kept intact, and made free of ClickHouse
+`CLICKHOUSE_URL=""` runs sampling-only: stdout + `KLEND_SAMPLE_SLOTS` + the summary table, no writes,
+ClickHouse not required (and `run.sh` skips fetching its Keychain password in that mode). The DB sink
+connects **before** the billed stream opens, so a broken sink aborts before Alchemy starts charging.
+
+### This run (verification, KLEND_SAMPLE_SLOTS=150)
+Span 169 slots (~68s), 81 updates, 31 distinct accounts, ~10 KB/s payload. 80 Reserve / 1 Obligation.
+One Reserve carried 5 versions across the span — exactly the multi-version history the schema exists
+to keep. Process self-terminated on budget; orphan check (`grep "[t]arget/debug/klend-indexer"`)
+clean afterward. `secrets`: added `klend-clickhouse-password` fetch to `run.sh`, same Keychain
+discipline as the Alchemy token — scoped to the child process, never in a file or argv.
+
+### State after today
+ClickHouse left **up** (local, loopback, non-billing) with 81 rows for follow-on queries — `./ch.sh
+down` to stop it. Docker daemon up. Nothing streaming or billing. `schema/002_checkpoint.sql` is in
+the repo but was applied to the existing volume by hand (`ch.sh q`), since init scripts only run on a
+fresh volume; a future `nuke` + `up` applies it automatically.
+
+**Next: Block 2 (§11e / §8c)** — the reconnect/resume/gap-detection state machine. It reads the
+checkpoint this block writes and resumes from `last_slot` inclusive. Do not start mid-session; it's
+the focus-hungry part. Nothing new to design — §8c already specifies it.

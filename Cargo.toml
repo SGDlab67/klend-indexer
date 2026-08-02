@@ -7,6 +7,10 @@ edition = "2024"
 anyhow = "1.0.104"
 bs58 = "0.5.1"
 futures = "0.3.33"
+# Native protocol (port 9000), not HTTP. Chosen over the HTTP `clickhouse` crate
+# to work the ClickHouse binary block format directly — see the 2026-08-01
+# NOTES entry. `insert_native_block` handles the batched write.
+klickhouse = "0.15"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 sha2 = "0.10"
 tokio = { version = "1.53.0", features = ["full"] }
