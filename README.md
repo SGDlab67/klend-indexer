@@ -139,4 +139,6 @@ deliberately verbose; it is the raw material for later writeups.
 
 ## License
 
-MIT
+MIT, except `vendor/klend-interface/`, which is redistributed under its own
+Business Source License 1.1 (copyright StroudGlobal S.A.; Change Date 2029-04-15,
+Change License GPL-3.0-or-later). See `vendor/klend-interface/LICENSE`.

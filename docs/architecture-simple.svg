@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="890" viewBox="0 0 1600 890" font-family="-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="big" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <marker id="bigL" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94A3B8"/>
+    </marker>
+    <style><![CDATA[
+      .h1   { font-size: 33px; font-weight: 700; fill: #0F172A; }
+      .h2   { font-size: 17px; fill: #64748B; }
+      .sect { font-size: 14px; font-weight: 700; fill: #94A3B8; letter-spacing: 2.4px; }
+      .bt   { font-size: 19.5px; font-weight: 700; }
+      .bb   { font-size: 14.5px; fill: #475569; }
+      .ct   { font-size: 20px; font-weight: 700; fill: #0F172A; }
+      .cb   { font-size: 15px; fill: #475569; }
+      .num  { font-size: 17px; font-weight: 700; fill: #FFFFFF; }
+      .lbl  { font-size: 14px; fill: #64748B; }
+      .flow { stroke: #334155; stroke-width: 3; fill: none; }
+      .flowd{ stroke: #94A3B8; stroke-width: 3; fill: none; stroke-dasharray: 9 7; }
+    ]]></style>
+  </defs>
+
+  <rect width="1600" height="890" fill="#FFFFFF"/>
+
+  <text class="h1" x="60" y="58">klend-indexer</text>
+  <text class="h2" x="60" y="92">A real-time indexer for Kamino Lend (klend) account state on Solana, built for liquidation forensics.</text>
+
+  <!-- ===== STAGE 1 ===== -->
+  <rect x="60" y="140" width="254" height="200" rx="14" fill="#F5F1FF" stroke="#6D28D9" stroke-width="2"/>
+  <circle cx="92" cy="172" r="17" fill="#6D28D9"/>
+  <text class="num" x="92" y="178" text-anchor="middle">1</text>
+  <text class="bt" x="76" y="230" fill="#4C1D95">Solana validator</text>
+  <text class="bb" x="76" y="262">mainnet-beta</text>
+  <text class="bb" x="76" y="286">one slot = 400 ms</text>
+  <text class="bb" x="76" y="310">Geyser account writes</text>
+
+  <!-- ===== STAGE 2 ===== -->
+  <rect x="366" y="140" width="254" height="200" rx="14" fill="#F5F1FF" stroke="#6D28D9" stroke-width="2"/>
+  <circle cx="398" cy="172" r="17" fill="#6D28D9"/>
+  <text class="num" x="398" y="178" text-anchor="middle">2</text>
+  <text class="bt" x="382" y="230" fill="#4C1D95">Yellowstone gRPC</text>
+  <text class="bb" x="382" y="262">owner = klend program</text>
+  <text class="bb" x="382" y="286">commitment = CONFIRMED</text>
+  <text class="bb" x="382" y="310">billed by bandwidth</text>
+
+  <!-- ===== STAGE 3 ===== -->
+  <rect x="672" y="140" width="254" height="200" rx="14" fill="#FFF4ED" stroke="#EA580C" stroke-width="2"/>
+  <circle cx="704" cy="172" r="17" fill="#EA580C"/>
+  <text class="num" x="704" y="178" text-anchor="middle">3</text>
+  <text class="bt" x="688" y="230" fill="#9A3412">klend-indexer</text>
+  <text class="bb" x="688" y="262">Rust 2024 + tokio</text>
+  <text class="bb" x="688" y="286">types accounts by Anchor</text>
+  <text class="bb" x="688" y="310">discriminator, then batches</text>
+
+  <!-- ===== STAGE 4 ===== -->
+  <rect x="978" y="140" width="254" height="200" rx="14" fill="#FEFBEB" stroke="#CA8A04" stroke-width="2"/>
+  <circle cx="1010" cy="172" r="17" fill="#CA8A04"/>
+  <text class="num" x="1010" y="178" text-anchor="middle">4</text>
+  <text class="bt" x="994" y="230" fill="#854D0E">ClickHouse</text>
+  <text class="bb" x="994" y="262">account_updates</text>
+  <text class="bb" x="994" y="286">ingest_checkpoint</text>
+  <text class="bb" x="994" y="310">native protocol, port 9000</text>
+
+  <!-- ===== STAGE 5 ===== -->
+  <rect x="1284" y="140" width="254" height="200" rx="14" fill="#ECFDF5" stroke="#059669" stroke-width="2" stroke-dasharray="9 7"/>
+  <circle cx="1316" cy="172" r="17" fill="#059669"/>
+  <text class="num" x="1316" y="178" text-anchor="middle">5</text>
+  <text class="bt" x="1300" y="230" fill="#065F46">Liquidation forensics</text>
+  <text class="bb" x="1300" y="262">the state one slot before</text>
+  <text class="bb" x="1300" y="286">and after, the liquidator,</text>
+  <text class="bb" x="1300" y="310">the tip paid, the bonus</text>
+
+  <!-- ===== ARROWS ===== -->
+  <line class="flow"  x1="318" y1="240" x2="362" y2="240" marker-end="url(#big)"/>
+  <line class="flow"  x1="624" y1="240" x2="668" y2="240" marker-end="url(#big)"/>
+  <line class="flow"  x1="930" y1="240" x2="974" y2="240" marker-end="url(#big)"/>
+  <line class="flowd" x1="1236" y1="240" x2="1280" y2="240" marker-end="url(#bigL)"/>
+
+  <!-- resume loop -->
+  <polyline class="flow" points="1105,340 1105,404 493,404 493,344" marker-end="url(#big)"/>
+  <text class="lbl" x="799" y="428" text-anchor="middle">on reconnect, resume from the last checkpointed slot (inclusive)</text>
+
+  <!-- ===== WHY CARDS ===== -->
+  <text class="sect" x="60" y="462">WHY IT IS BUILT THIS WAY</text>
+
+  <rect x="60" y="482" width="470" height="196" rx="14" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.5"/>
+  <text class="ct" x="82" y="518">Keep every version</text>
+  <text class="cb" x="82" y="550">About 36% of updates rewrite the same account</text>
+  <text class="cb" x="82" y="574">inside a single slot. The sort key</text>
+  <text class="cb" x="82" y="598">(pubkey, slot, write_version) keeps all of them,</text>
+  <text class="cb" x="82" y="622">because the state on both sides of one</text>
+  <text class="cb" x="82" y="646">instruction is the whole product.</text>
+
+  <rect x="565" y="482" width="470" height="196" rx="14" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.5"/>
+  <text class="ct" x="587" y="518">Store bytes, decode later</text>
+  <text class="cb" x="587" y="550">Yellowstone serves the tip and cannot re-serve</text>
+  <text class="cb" x="587" y="574">an old slot. The raw payload is stored</text>
+  <text class="cb" x="587" y="598">undecoded, so a decoding bug stays replayable</text>
+  <text class="cb" x="587" y="622">against history instead of being</text>
+  <text class="cb" x="587" y="646">unrecoverable.</text>
+
+  <rect x="1070" y="482" width="470" height="196" rx="14" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.5"/>
+  <text class="ct" x="1092" y="518">Duplicates, never holes</text>
+  <text class="cb" x="1092" y="550">The data batch commits before the checkpoint,</text>
+  <text class="cb" x="1092" y="574">and resume rewinds to that slot inclusive. A</text>
+  <text class="cb" x="1092" y="598">replayed insert collapses to the same row,</text>
+  <text class="cb" x="1092" y="622">while a checkpoint ahead of its data would be</text>
+  <text class="cb" x="1092" y="646">a silent hole.</text>
+
+  <!-- ===== MEASURED ===== -->
+  <rect x="60" y="710" width="1480" height="92" rx="14" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5"/>
+  <text class="sect" x="82" y="742">MEASURED OVER A 774-SLOT SAMPLE</text>
+  <text class="cb" x="82" y="774">5.3 KB/s of payload (about 13 GB per month) &#183;  86.9% Reserve, 12.2% Obligation, 0.9% UserMetadata &#183;  only 6.5% of slots carry a klend write</text>
+
+  <!-- ===== LEGEND ===== -->
+  <line x1="60" y1="848" x2="104" y2="848" stroke="#334155" stroke-width="3"/>
+  <text class="lbl" x="114" y="853">working today</text>
+  <line x1="250" y1="848" x2="294" y2="848" stroke="#94A3B8" stroke-width="3" stroke-dasharray="9 7"/>
+  <text class="lbl" x="304" y="853">planned</text>
+  <text class="lbl" x="1540" y="853" text-anchor="end">github.com/SGDlab67/klend-indexer</text>
+</svg>

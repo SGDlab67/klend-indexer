@@ -10,9 +10,16 @@ futures = "0.3.33"
 # Native protocol (port 9000), not HTTP. Chosen over the HTTP `clickhouse` crate
 # to work the ClickHouse binary block format directly — see the 2026-08-01
 # NOTES entry. `insert_native_block` handles the batched write.
-klickhouse = "0.15"
+klickhouse = { version = "0.15", features = ["tls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# TLS to ClickHouse Cloud (native-secure :9440). klickhouse's connect_tls wants a
+# tokio-rustls TlsConnector built by hand; webpki-roots ships the CA set in-binary
+# so a minimal container needs no OS trust store. Local dev stays plain :9000.
+tokio-rustls = "0.26"
+webpki-roots = "1"
 sha2 = "0.10"
 tokio = { version = "1.53.0", features = ["full"] }
 yellowstone-grpc-client = "13.2.1"
 yellowstone-grpc-proto = "12.5.0"
+bytemuck = "1"
+klend-interface = { path = "vendor/klend-interface" }

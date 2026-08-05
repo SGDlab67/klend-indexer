@@ -1,0 +1,201 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="950" viewBox="0 0 1680 950" font-family="-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+    <marker id="arL" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94A3B8"/>
+    </marker>
+    <style><![CDATA[
+      .title  { font-size: 25px; font-weight: 700; fill: #0F172A; }
+      .sub    { font-size: 13.5px; fill: #64748B; }
+      .phdr   { font-size: 11px; font-weight: 700; fill: #64748B; letter-spacing: 1.6px; }
+      .bt     { font-size: 14.5px; font-weight: 700; }
+      .bb     { font-size: 10.8px; fill: #475569; }
+      .bm     { font-size: 10.2px; fill: #334155; font-family: 'SF Mono', Menlo, Consolas, monospace; }
+      .lbl    { font-size: 10px; fill: #64748B; letter-spacing: 0.3px; }
+      .lblb   { font-size: 11px; fill: #475569; font-weight: 700; }
+      .panel  { fill: none; stroke: #CBD5E1; stroke-width: 1.2; stroke-dasharray: 5 5; }
+      .flow   { stroke: #475569; stroke-width: 1.8; fill: none; }
+      .flowd  { stroke: #94A3B8; stroke-width: 1.6; fill: none; stroke-dasharray: 6 5; }
+      .divide { stroke: #E2E8F0; stroke-width: 1.2; }
+    ]]></style>
+  </defs>
+
+  <rect width="1680" height="950" fill="#FFFFFF"/>
+
+  <!-- Title -->
+  <text class="title" x="40" y="46">klend-indexer &#8212; a real-time indexer for Kamino Lend (klend) account state on Solana</text>
+  <text class="sub" x="40" y="74">Validator to Geyser to Yellowstone gRPC to a Rust/tokio indexer to ClickHouse, for liquidation forensics.   Solid = working today, dashed = planned.</text>
+
+  <!-- ===== PANEL 1: SOLANA ===== -->
+  <rect class="panel" x="40" y="110" width="280" height="430" rx="14"/>
+  <text class="phdr" x="56" y="132">SOLANA MAINNET</text>
+
+  <rect x="58" y="146" width="244" height="62" rx="9" fill="#F5F1FF" stroke="#7C3AED" stroke-width="1.5"/>
+  <text class="bt" x="72" y="172" fill="#4C1D95">Solana validator</text>
+  <text class="bb" x="72" y="192">mainnet-beta, one slot &#8776; 400 ms</text>
+
+  <rect x="58" y="224" width="244" height="54" rx="9" fill="#F5F1FF" stroke="#7C3AED" stroke-width="1.5"/>
+  <text class="bt" x="72" y="250" fill="#4C1D95">Geyser plugin</text>
+  <text class="bb" x="72" y="268">account-write notifications</text>
+
+  <rect x="58" y="294" width="244" height="94" rx="9" fill="#F5F1FF" stroke="#7C3AED" stroke-width="1.5"/>
+  <text class="bt" x="72" y="320" fill="#4C1D95">Yellowstone gRPC endpoint</text>
+  <text class="bb" x="72" y="340">Alchemy, pay-as-you-go</text>
+  <text class="bb" x="72" y="356">billed by BANDWIDTH, not requests</text>
+  <text class="bb" x="72" y="372">serves the tip, cannot re-serve old slots</text>
+
+  <rect x="58" y="404" width="244" height="112" rx="9" fill="#FFFFFF" stroke="#7C3AED" stroke-width="1.5"/>
+  <text class="bt" x="72" y="430" fill="#4C1D95">SubscribeRequest</text>
+  <text class="bm" x="72" y="450">owner      = KLend2g3&#8230;gmjD</text>
+  <text class="bm" x="72" y="468">commitment = CONFIRMED</text>
+  <text class="bm" x="72" y="486">from_slot  = resume point</text>
+  <text class="bb" x="72" y="506" fill="#B91C1C">an empty owner filter = all of mainnet</text>
+
+  <!-- ===== PANEL 2: INDEXER ===== -->
+  <rect class="panel" x="356" y="110" width="520" height="606" rx="14"/>
+  <text class="phdr" x="372" y="132">klend-indexer  &#183;  RUST 2024 / TOKIO  &#183;  THIS REPO</text>
+
+  <rect x="374" y="146" width="484" height="72" rx="9" fill="#FFF4ED" stroke="#EA580C" stroke-width="1.5"/>
+  <text class="bt" x="390" y="172" fill="#9A3412">gRPC stream client</text>
+  <text class="bb" x="390" y="192">GeyserGrpcClient, rustls (ring) TLS, x-token auth header</text>
+  <text class="bb" x="390" y="208">one tokio::select! over the stream, a flush timer, and signals</text>
+
+  <rect x="374" y="234" width="484" height="106" rx="9" fill="#FFF4ED" stroke="#EA580C" stroke-width="1.5"/>
+  <text class="bt" x="390" y="260" fill="#9A3412">Account classifier &#8212; Anchor discriminator</text>
+  <text class="bb" x="390" y="280">disc = sha256("account:&lt;StructName&gt;")[..8], derived at startup from the</text>
+  <text class="bb" x="390" y="296">struct names and never transcribed, so a wrong guess cannot mislabel</text>
+  <text class="bm" x="390" y="320">AccountKind::Known(name) | Unknown([u8; 8]) | Untagged { len }</text>
+
+  <rect x="374" y="356" width="484" height="110" rx="9" fill="#FFF4ED" stroke="#EA580C" stroke-width="1.5"/>
+  <text class="bt" x="390" y="382" fill="#9A3412">Batch writer</text>
+  <text class="bb" x="390" y="402">buffer, then flush on 4096 rows, on a 2 s tick, or on exit / signal</text>
+  <text class="bb" x="390" y="418">the data batch (1) commits before the checkpoint (2), never the reverse</text>
+  <text class="bm" x="390" y="440">insert_native_block(INSERT &#8230; FORMAT Native, rows)</text>
+
+  <line class="divide" x1="374" y1="484" x2="858" y2="484"/>
+  <text class="phdr" x="374" y="504">RUNTIME CONTROLS</text>
+
+  <rect x="374" y="514" width="484" height="74" rx="9" fill="#FFFFFF" stroke="#EA580C" stroke-width="1.5"/>
+  <text class="bt" x="390" y="540" fill="#9A3412">Self-metering</text>
+  <text class="bb" x="390" y="560">tally by (kind, data_len), payload bytes, slot span, so the indexer</text>
+  <text class="bb" x="390" y="576">meters its own spend. Logs go to stderr, data to stdout.</text>
+
+  <rect x="374" y="602" width="484" height="100" rx="9" fill="#FFFFFF" stroke="#EA580C" stroke-width="1.5"/>
+  <text class="bt" x="390" y="628" fill="#9A3412">Supervision and bounded runs</text>
+  <text class="bb" x="390" y="648">KLEND_SAMPLE_SLOTS budgets a run in SLOTS, not seconds, so the process</text>
+  <text class="bb" x="390" y="664">bounds itself rather than trusting an external timeout or a wall clock</text>
+  <text class="bb" x="390" y="680">reconnect with capped backoff; a blown replay window logs an explicit GAP</text>
+
+  <!-- ===== PANEL 3: CLICKHOUSE ===== -->
+  <rect class="panel" x="912" y="110" width="420" height="606" rx="14"/>
+  <text class="phdr" x="928" y="132">CLICKHOUSE 25.3  &#183;  DOCKER, LOOPBACK ONLY</text>
+
+  <rect x="930" y="146" width="384" height="200" rx="9" fill="#FEFBEB" stroke="#CA8A04" stroke-width="1.5"/>
+  <text class="bt" x="946" y="172" fill="#854D0E">account_updates</text>
+  <text class="bm" x="946" y="192">ReplacingMergeTree(ingested_at)</text>
+  <text class="bm" x="946" y="210">ORDER BY (pubkey, slot, write_version)</text>
+  <text class="bm" x="946" y="228">PARTITION BY intDiv(slot, 10000000)</text>
+  <text class="bb" x="946" y="252">every intra-slot write_version is kept: the pre/post</text>
+  <text class="bb" x="946" y="268">state around an instruction IS the product</text>
+  <text class="bb" x="946" y="290">the raw payload is stored undecoded, so decoding stays</text>
+  <text class="bb" x="946" y="306">replayable against history instead of one-shot</text>
+  <text class="bb" x="946" y="328">data_len MATERIALIZED, pubkey_b58 ALIAS, never written</text>
+
+  <rect x="930" y="370" width="384" height="150" rx="9" fill="#FEFBEB" stroke="#CA8A04" stroke-width="1.5"/>
+  <text class="bt" x="946" y="396" fill="#854D0E">ingest_checkpoint</text>
+  <text class="bm" x="946" y="416">ReplacingMergeTree(updated_at) ORDER BY stream</text>
+  <text class="bm" x="946" y="434">stream, last_slot, last_write_version</text>
+  <text class="bb" x="946" y="458">the durable resume seam, written after each batch</text>
+  <text class="bb" x="946" y="474">resume is from last_slot INCLUSIVE: a slot can split</text>
+  <text class="bb" x="946" y="490">across batches, so re-read it rather than skip its tail</text>
+
+  <rect x="930" y="544" width="384" height="100" rx="9" fill="#FFFFFF" stroke="#CA8A04" stroke-width="1.5"/>
+  <text class="bt" x="946" y="570" fill="#854D0E">Why duplicates are safe</text>
+  <text class="bb" x="946" y="590">the sort key makes a replayed insert idempotent, so the</text>
+  <text class="bb" x="946" y="606">reconnect path can prefer DUPLICATES over HOLES.</text>
+  <text class="bb" x="946" y="622">A checkpoint ahead of its data is a silent hole.</text>
+
+  <rect x="930" y="654" width="384" height="48" rx="9" fill="#FFFFFF" stroke="#CA8A04" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text class="bb" x="946" y="676">pinned image, loopback-only bind, 4 GB cap, healthcheck,</text>
+  <text class="bb" x="946" y="692">named volumes, and a SELECT-only user for read tooling</text>
+
+  <!-- ===== PANEL 4: OUTPUTS ===== -->
+  <rect class="panel" x="1368" y="110" width="272" height="314" rx="14"/>
+  <text class="phdr" x="1384" y="132">OUTPUTS</text>
+
+  <rect x="1386" y="146" width="236" height="118" rx="9" fill="#ECFDF5" stroke="#059669" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text class="bt" x="1400" y="172" fill="#065F46">Liquidation forensics</text>
+  <text class="bb" x="1400" y="192">every klend liquidation with</text>
+  <text class="bb" x="1400" y="208">account state at slot&#8722;1 and</text>
+  <text class="bb" x="1400" y="224">slot+1, liquidator identity,</text>
+  <text class="bb" x="1400" y="240">tip paid, and realised bonus</text>
+
+  <rect x="1386" y="284" width="236" height="52" rx="9" fill="#ECFDF5" stroke="#059669" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text class="bt" x="1400" y="310" fill="#065F46">Parquet export</text>
+  <text class="bb" x="1400" y="328">for cold analysis and sharing</text>
+
+  <rect x="1386" y="356" width="236" height="52" rx="9" fill="#ECFDF5" stroke="#059669" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text class="bt" x="1400" y="382" fill="#065F46">Research writeups</text>
+  <text class="bb" x="1400" y="400">liquidator margin after the cut</text>
+
+  <!-- ===== PANEL 5: NOT BUILT YET ===== -->
+  <rect class="panel" x="1368" y="452" width="272" height="190" rx="14"/>
+  <text class="phdr" x="1384" y="474">NOT BUILT YET</text>
+  <text class="bb" x="1390" y="500">&#8212; field-level Borsh decoding</text>
+  <text class="bb" x="1390" y="524">&#8212; backfill and gap reconciliation</text>
+  <text class="bb" x="1390" y="548">&#8212; fork / commitment handling</text>
+  <text class="bb" x="1390" y="572">&#8212; accounts_data_slice trimming</text>
+  <text class="bb" x="1390" y="596">&#8212; memcmp discriminator filter</text>
+  <text class="bb" x="1390" y="620">&#8212; metrics, alerting, 24/7 operation</text>
+
+  <!-- ===== FLOW ARROWS ===== -->
+  <polyline class="flow" points="302,341 336,341 336,182 374,182" marker-end="url(#ar)"/>
+  <text class="lbl" transform="translate(331,300) rotate(-90)" text-anchor="end">account updates over TLS</text>
+
+  <line class="flow" x1="616" y1="218" x2="616" y2="232" marker-end="url(#ar)"/>
+  <line class="flow" x1="616" y1="340" x2="616" y2="354" marker-end="url(#ar)"/>
+
+  <polyline class="flow" points="858,400 892,400 892,244 930,244" marker-end="url(#ar)"/>
+  <line class="flow" x1="858" y1="441" x2="930" y2="441" marker-end="url(#ar)"/>
+  <text class="lbl" transform="translate(886,336) rotate(-90)" text-anchor="end">native protocol, port 9000</text>
+  <circle cx="874" cy="400" r="9" fill="#FFFFFF" stroke="#475569" stroke-width="1.5"/>
+  <text class="lblb" x="874" y="404" text-anchor="middle">1</text>
+  <circle cx="874" cy="441" r="9" fill="#FFFFFF" stroke="#475569" stroke-width="1.5"/>
+  <text class="lblb" x="874" y="445" text-anchor="middle">2</text>
+
+  <polyline class="flowd" points="1314,244 1348,244 1348,200 1386,200" marker-end="url(#arL)"/>
+
+  <polyline class="flow" points="1314,470 1350,470 1350,748 180,748 180,520" marker-end="url(#ar)"/>
+  <text class="lbl" x="740" y="740" text-anchor="middle">resume on reconnect:  from_slot = last_slot, inclusive</text>
+
+  <!-- ===== BOTTOM BAND ===== -->
+  <rect class="panel" x="40" y="770" width="1600" height="130" rx="14"/>
+
+  <rect x="56" y="786" width="498" height="98" rx="9" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.2"/>
+  <text class="phdr" x="74" y="812">SECRETS</text>
+  <text class="bb" x="74" y="832">the gRPC token and the database password live in the macOS Keychain,</text>
+  <text class="bb" x="74" y="848">and run.sh injects them into one child process only. They never reach</text>
+  <text class="bb" x="74" y="864">disk, argv, or shell history, so the script itself is safe to commit.</text>
+
+  <rect x="574" y="786" width="498" height="98" rx="9" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.2"/>
+  <text class="phdr" x="592" y="812">MEASURED: 774-SLOT SAMPLE (~310 s), CONFIRMED</text>
+  <text class="bb" x="592" y="832">5.3 KB/s of payload &#8776; 13 GB/month &#8776; $1/month at $80/TB</text>
+  <text class="bb" x="592" y="848">86.9% Reserve, 12.2% Obligation, 0.9% UserMetadata</text>
+  <text class="bb" x="592" y="864">only 6.5% of slots carry a klend write: traffic is bursty, not per-slot</text>
+
+  <rect x="1092" y="786" width="532" height="98" rx="9" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.2"/>
+  <text class="phdr" x="1110" y="812">OPEN QUESTIONS</text>
+  <text class="bb" x="1110" y="832">a 4664-byte account type matches none of the candidate struct names</text>
+  <text class="bb" x="1110" y="848">the day-1 and day-2 update rates still disagree by ~2x, unexplained</text>
+  <text class="bb" x="1110" y="864">87% of the bytes billed are the accounts forensics needs least</text>
+
+  <!-- ===== LEGEND ===== -->
+  <line x1="56" y1="922" x2="92" y2="922" stroke="#475569" stroke-width="2"/>
+  <text class="lbl" x="100" y="926">working today</text>
+  <line x1="212" y1="922" x2="248" y2="922" stroke="#94A3B8" stroke-width="2" stroke-dasharray="6 5"/>
+  <text class="lbl" x="256" y="926">planned</text>
+  <text class="lbl" x="1624" y="926" text-anchor="end">github.com/SGDlab67/klend-indexer</text>
+</svg>

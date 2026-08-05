@@ -116,3 +116,47 @@ pw=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)
 printf '%s\n%s\n' "$pw" "$pw" | security add-generic-password -a "$USER" -s klend-clickhouse-password -w
 unset pw
 ```
+
+---
+
+## ClickHouse Cloud password (added day 5)
+
+Third secret, for the hosted ClickHouse Cloud service the deployed indexer writes to.
+Kept DISTINCT from the local docker password above under its own Keychain service, so
+rotating or leaking one never touches the other:
+
+```bash
+security add-generic-password -a "$USER" -s klend-clickhouse-cloud-password -w
+```
+
+Used from the Mac by `deploy/apply-schema-cloud.sh`, which passes it to curl via a
+file descriptor (curl `--config /dev/fd/3`), never as `--user pass` on the command
+line, so it stays out of argv and off disk. This is the payment-adjacent asset the
+account_updates data lives in, so treat it with the same care as the two keys above.
+
+## Secrets on the deploy box (added day 5)
+
+The deploy target is Linux (a GCE VM), where there is no macOS Keychain. SECRETS.md's
+own upgrade note anticipated this. Primary path, matching the GCP-native deploy
+(`deploy/DEPLOY.md`):
+
+- The two secrets live in **GCP Secret Manager**, encrypted and IAM-gated. They are
+  loaded there once, piped straight from the Keychain so the value never touches disk
+  or argv:
+  ```bash
+  security find-generic-password -a "$USER" -s alchemy-grpc-token -w \
+    | gcloud secrets create alchemy-grpc-token --data-file=-
+  ```
+- The VM's boot startup-script (`deploy/gce-startup.sh`) fetches them with the
+  instance service-account token into a `/run` (tmpfs) env file, `docker run
+  --env-file`, then deletes the file. Values exist on the box only in tmpfs, only for
+  the seconds between fetch and container start, and never on persistent disk.
+- The script and instance metadata contain only secret NAMES, not values. Same
+  "config in the clear, secrets in the vault" split the Keychain rule enforces on the
+  Mac, one rung up from `op run`.
+
+Fallback, if not using Secret Manager (see DEPLOY.md's simple-fallback section): a
+root-owned `chmod 600 /etc/klend-indexer.env` from the committed
+`deploy/klend-indexer.env.example` reference file, injected with `docker run
+--env-file`. Values then sit on the box's disk (root-only), which is why Secret
+Manager is the primary path.
