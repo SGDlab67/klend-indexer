@@ -199,6 +199,9 @@ discriminator rather than inferred from size and frequency.
 rarer than a 5-minute window catches. Still unidentified — none of the eight candidate names
 matched anything, so it is a klend struct not in the guessed list. Open question.
 
+**[2026-08-05 resolved: 4664 = LendingMarket (4656B struct + 8B disc). Added to CANDIDATE_ACCOUNTS
+and decode landed Day 6.]**
+
 ### Correction: "reserves rewrite every slot" is FALSE
 The README claimed reserves rewrite constantly — interest accrual + oracle refresh, every slot.
 Measured: **only 50 of 774 slots (6.5%) carried any klend update at all.** klend writes are
@@ -277,7 +280,9 @@ rows); expensive once real data is in.
 Storing the undecoded payload alongside the decoded columns looks redundant. It isn't: Yellowstone
 streams the **tip** and cannot re-serve an old slot. Store only decoded columns and every decode
 bug is unrecoverable — the original bytes are gone. Keeping `data` makes decode replayable against
-history instead of one-shot. Relevant right now given the 4664-byte type is still unidentified.
+history instead of one-shot. Relevant right now given only two of the six+ account types are decoded (Obligation, Reserve,
+LendingMarket as of Day 6; UserMetadata, GlobalConfig, ReferrerTokenState, ReferrerState,
+WithdrawTicket remain).
 
 ### Derived columns, so the writer cannot get them wrong
 - `data_len` — MATERIALIZED, computed at insert, cannot drift from the payload it describes.
@@ -547,7 +552,7 @@ documented in DEPLOY.md if the managed pieces are unwanted.
 After it is accumulating, field-level `Obligation` decode (§11c Aug 7-13) is the work that makes the
 demo legible.
 
-### Decode groundwork: header CONFIRMED, deep layout BLOCKED on the deployed struct version
+### Decode groundwork: header CONFIRMED, deep layout resolved via vendored klend-interface
 Started the `Obligation` decode ahead of sequence and stopped at a real blocker, recorded here so a
 future session does not repeat it. Verified everything against the one real Obligation in local CH
 (`HfVu6PAuS7Q9gUjtWU9RHRT1czv94rzBv13KeEaMP4jZ`, 3344 bytes), read-only, no billing.
@@ -585,6 +590,10 @@ focused session, not the autonomous loop:
 2. Verify against MANY obligations, not one. This is also why the plan sequences decode AFTER deploy:
    thousands of accumulated obligations let the `allowed < unhealthy < deposited` invariant and real
    reserve-pubkey cross-checks pin the deep offsets empirically. One sample cannot.
+
+**[2026-08-05 resolved: vendored klend-interface at `vendor/klend-interface/` (Business Source License)
+with correct Obligation layout (3336 bytes), verified via const assertion + unit tests. Obligation decode
+landed Aug 5, verified with live health factors from the deployed container.]**
 
 `deposit0`/`borrow0` reserve pubkeys read as plausible values but are unconfirmed given the size
 mismatch, so they are not recorded as fact.
@@ -668,9 +677,11 @@ startup script `exit status 0`, fresh container, `RestartCount=0`, `resuming fro
 slot=437280504 (inclusive)`, then streaming. Resume-from-checkpoint made the restart lossless, which is
 the Day 5 code half doing exactly its job.
 
-Remaining for the operator: tighten the ClickHouse Cloud IP access list from `0.0.0.0/0` to the VM's
-external IP, and confirm the Alchemy spend cap and alert are live now that the billed
+Remaining for the operator: ~~tighten the ClickHouse Cloud IP access list from `0.0.0.0/0` to the VM's
+external IP, and~~ confirm the Alchemy spend cap and alert are live now that the billed
 stream is actually running.
+
+**[2026-08-05: ClickHouse IP locked to 34.44.9.74. Alchemy spend alert still pending.]**
 
 ---
 
@@ -734,3 +745,286 @@ Two Container-Optimized OS constraints surfaced: (1) **no cron** on COS, so the 
 systemd service with `Restart=always`; (2) **`/var` is mounted noexec**, so a script under `/var/lib`
 cannot be `ExecStart`ed directly (systemd fails with `203/EXEC`). Fix: `ExecStart=/bin/bash
 /var/lib/klend/watchdog.sh` runs the exec-allowed interpreter and reads the script as data.
+
+## Day 6 — bandwidth reduction + two new decodes land (2026-08-05)
+
+### accounts_data_slice + memcmp split filters deployed
+
+The stream now uses TWO named filters with Anchor discriminator memcmp at offset 0:
+one for Obligation, one for Reserve. Combined with a request-level `accounts_data_slice`
+(length 3344, the Obligation wire size), Reserves are trimmed from 8624 to 3344 bytes
+(61% per-Reserve saving). Weighted by traffic mix (87% Reserve, 13% Obligation):
+~58% total bandwidth reduction.
+
+The proto limitation is real: `accounts_data_slice` is on `SubscribeRequest` (tag 7),
+not on `SubscribeRequestFilterAccounts`. Per-filter slicing is not supported, so the
+slice length is the LARGEST account we need intact (Obligation at 3344). To get ~87%
+Reserve savings (trim to 256 bytes), two separate gRPC connections would be needed.
+
+### 4664-byte mystery type resolved: LendingMarket
+
+The account catalog in klend-interface confirmed it: LendingMarket is 4656 bytes + 8-byte
+discriminator = 4664. Added to CANDIDATE_ACCOUNTS and wired decode. Fields extracted:
+owner, quote_currency, flags (emergency/autodeleverage/borrow_disabled/immutable),
+referral_fee_bps, liquidation_max_debt_close_factor_pct, name. Uses the interface
+crate's `from_account_data::<LendingMarket>()` helper — cleaner than the manual
+bytemuck in Obligation decode.
+
+### Reserve field-level decode (liquidity only)
+
+Added `ReserveLite` — a 1352-byte prefix struct covering only the fields within the
+3344-byte gRPC slice. Safe fields decoded: version, last_update_slot, lending_market,
+liquidity_mint, supply_vault, fee_vault, available_liquidity, borrowed_amount,
+market_price, mint_decimals, accumulated_protocol_fees, accumulated_referrer_fees.
+
+What is NOT decoded: config (LTV/LT/deposit limits/status), collateral (cToken supply),
+borrowed_amount_outside_elevation_group — all beyond the slice boundary. Full Reserve
+decode needs the second gRPC connection approach.
+
+### slot_gaps table deployed
+
+schema/004_slot_gaps.sql created and applied to Cloud. GapRow writes at both
+reconnect-lite detection points: subscribe failure (replay window exceeded) and
+unreachable resume (no data before stream error). Gaps are now persistent and
+queryable: `SELECT sum(end_slot - start_slot) FROM slot_gaps FINAL WHERE filled = 0`.
+
+### ClickHouse IP locked
+
+IP access list tightened from `0.0.0.0/0` to 34.44.9.74 (the VM's external IP).
+Confirmed: Mac blocked, VM works. This closes the "remaining for the operator" item
+from Day 5.
+
+### Schema additions (not yet applied to Cloud)
+
+schema/005_lending_market_snapshots.sql and schema/006_reserve_snapshots.sql created
+but NOT applied to ClickHouse Cloud. The tables exist locally only. Apply before the
+next deploy so the new decodes have destination tables.
+
+All 12 unit tests pass, cargo check clean. Changes live on disk, not yet deployed to GCP.
+
+## Runtime lag / liveness metric (2026-08-05)
+
+Closed the last item from the Zero_Copy audit: no in-process "how far behind the tip am I" signal. While
+running, the shutdown summary gives throughput but nothing tells you live whether the indexer is keeping up
+or falling behind. Added a periodic (10s) `lag` line to stderr:
+
+```
+lag tip=437479019 processed=437478995 behind=24 slots (~10s) | stream_lag=0.3s | 0.0 acct/s
+```
+
+### Two readings, because one alone lies
+- **`behind`** = live chain tip minus the last klend account slot we processed. Large-and-shrinking means
+  catching up after a reconnect. But it GROWS during klend-quiet spans (the chain advances, no klend account
+  arrives to process), so on its own it cries wolf.
+- **`stream_lag`** = wall seconds between now and the server's `created_at` on the last message we drained.
+  This is the real keeping-up signal: it stays sub-second while healthy EVEN in a quiet span (slot
+  notifications keep arriving and carry `created_at`), and it climbs only if we actually fall behind or the
+  socket half-opens. It is the in-band cousin of the watchdog's ingest-freshness check.
+
+The verification run caught the quiet-span case directly: `behind=24 slots` while `stream_lag=0.3s` and
+`0.0 acct/s`. Slot-lag looked alarming, stream-lag proved we were still real-time. Reading them together is
+the point.
+
+### In-band, not a side RPC
+The audit suggested `max(ingested_at)` in ClickHouse plus a separate `getSlot` RPC. Went in-band instead:
+a **slots-only subscription** (`filter_by_commitment` = CONFIRMED, matching the account stream) streams the
+tip continuously and cheaply (a slot notification is a bare number), and the envelope's `created_at`, which
+is replay-immune (a replayed message keeps its original produce time), gives the wall-clock lag. No extra
+endpoint, no round-trip, no dependency on the write path, so it also works in sampling-only mode. It does
+not duplicate the external watchdog: the watchdog answers "is data still landing" from OUTSIDE the process
+(catches a total freeze the process cannot self-report), while this answers "am I keeping up right now" from
+INSIDE the stream. Defense in depth, two vantage points.
+
+Implementation: `tip_slot` tracked from `UpdateOneof::Slot` (monotonic `max`, statuses can arrive out of
+order); `last_produced_unix` set from `message.created_at` on every message variant; a `lag_tick` interval
+branch in the `select!` prints the line and resets the per-interval account counter. Verified against the
+live stream via a bounded `KLEND_SAMPLE_SLOTS` run; compiles clean, no clippy warnings on the new code.
+
+## Phase 2 backfill: what it can and cannot be, plus the snapshot (2026-08-06)
+
+Picked up "Phase 2: fill the gaps from an archive RPC" and surveyed before writing
+code. Two premises in that plan did not survive contact with the data, and one
+unrelated landmine turned up on the way.
+
+### `slot_gaps` was empty, and the one real gap was never recorded
+
+The plan assumed gaps were accumulating in `slot_gaps`. The table had zero rows.
+Deriving holes directly from the data instead (walk `account_updates` by slot,
+look for jumps) found exactly one:
+
+| start (exclusive) | end (inclusive) | slots | wall clock UTC | duration |
+|---|---|---|---|---|
+| 437,313,969 | 437,387,843 | 73,874 | 2026-08-05 04:50:15 to 13:30:02 | 8h 40m |
+
+That is the wedge incident, and it explains the empty table. Both `record_gap`
+call sites live on the reconnect path, and a process frozen mid-write never
+reconnects. `slot_gaps` records the class of gap the indexer notices, which so
+far is not the class that has actually cost data. A backfill job reading unfilled
+spans from it would have read zero rows and done nothing.
+
+Correcting a Day 5 claim: the entry above says restart-resume plus `--restart
+always` covers unattended operation. It does not cover a hang. The 30s
+`INSERT_TIMEOUT` added afterwards is what closes that, and the gap-detection path
+still has the hole described here.
+
+### `getProgramAccounts` cannot backfill history
+
+The bigger correction. The plan called for "an archive RPC with
+`getProgramAccounts` + block range queries" writing missed account updates back
+into `account_updates`. There is no at-slot variant of `getProgramAccounts` on
+Helius, Triton, or Alchemy: it returns present state, full stop. Archival
+`getBlock` can tell you *which* accounts were written at *which* slot by walking
+transactions that invoke the program, but transaction meta carries only balances,
+so the post-write bytes are not in there. Recovering a Reserve's state as of slot
+437,320,000 would mean replaying klend's instruction logic off-chain, which is
+reimplementing the program, not backfilling it.
+
+So the gap's `data` is unrecoverable. That is a property of Solana RPC, not of
+this indexer, and it is worth writing down because it is the kind of thing that
+gets re-proposed every few weeks. Full reasoning in `docs/backfill-phase2.md`.
+
+Decision: skip the block-timeline job. 73,874 archival `getBlock` calls on an
+uncapped key, to produce "account X was written at slot Y" with no state attached,
+is metadata about a hole rather than a filling of it. It answers no question the
+demo asks.
+
+### What was actually worth building: the current-state snapshot
+
+The stream delivers account *updates*, so the dataset contains exactly the
+accounts that changed while the indexer was connected. Everything idle is absent,
+and absent in the worst way: nothing in the data indicates it should be there.
+
+Measured, and it is not a rounding error. The stream had seen **1,166** distinct
+accounts. `getProgramAccounts` says the program owns **140,391**:
+
+```
+Obligation     139,621
+Reserve            557
+LendingMarket      213
+```
+
+A factor of 120. `src/bin/snapshot.rs` is a one-shot binary that enumerates them,
+decodes with the same `decode` module the indexer uses, and writes into the same
+tables, marked `write_version = 0`. Geyser's write_version is a monotonic counter
+that is never 0 for a real update, so it is a free sentinel that separates
+snapshot rows from wire rows with no schema change, and it sorts first within
+`(pubkey, slot, write_version)` instead of colliding. `schema/007_snapshot_runs.sql`
+records the run itself so provenance is a join rather than a convention.
+
+`ingest_checkpoint` is deliberately not touched. It is the stream's resume point;
+moving it to an RPC context slot would make the indexer resume from a slot it
+never consumed, turning a snapshot into a stream gap.
+
+### Paging, because the box that must run it has 1 GB
+
+A single unpaged response is ~630 MB of base64 and several times that once parsed.
+The snapshot has to run on the VM (ClickHouse admits only the VM's IP), and the VM
+is an e2-micro. It cannot buffer that.
+
+`getProgramAccounts` has no pagination, so the partition comes from a second
+`memcmp`: one byte of `Obligation.owner` at payload offset 64 (8 discriminator +
+8 tag + 16 last_update + 32 lending_market). Owner bytes are uniform, so 256
+filters split the set into ~545 accounts each, disjoint and exhaustive by
+construction. Verified: the 256 pages summed to 139,621, exactly the unpaged
+count. Each page is fetched, decoded, written, and dropped; only counters survive
+a page boundary. Reserves and LendingMarkets are in the hundreds and fetch whole.
+
+Two LendingMarket accounts fail decode on a size mismatch. Their raw rows still
+land, which is precisely why the undecoded payload column exists.
+
+### The landmine: two tables the code writes to did not exist
+
+`reserve_snapshots` and `lending_market_snapshots` were in `schema/` but had never
+been applied to Cloud, while the working tree already decodes both. The next
+redeploy would have crash-looped on the first Reserve flush. Applied 005, 006, and
+007 before touching the image.
+
+The reason they were never applied is the next item.
+
+### Mac-to-ClickHouse was severed, and the runbook pointed at the wrong project
+
+Three operational defects, all live, none related to Phase 2:
+
+1. **The VM is in `agentbiz-sungodlab`, not the active gcloud project.** Every
+   documented command omitted `--project`, resolved against
+   `gen-lang-client-0502946726`, and died with "resource not found". Both
+   escalation steps in the babysit runbook were broken this way.
+2. **The ClickHouse IP access list is now a single entry, the VM.** Correct
+   decision, but it silently killed every Mac-side script that talked to :8443.
+   `health-check.sh` had been timing out with curl (28) on every run, which is
+   where the `rows= accounts= last_slot= lag=s` output came from. The check was
+   blind, not healthy.
+3. **`health-check.sh` reported a connection failure as STALE, not unreachable.**
+   The `|| exit 2` guard hung off `read`, but the failure happened inside the
+   `$(...)` that `read` consumed, so `read` succeeded on an empty string and
+   `${LAG:-99999}` routed it down the stale branch.
+
+Fix for (2) is not to reopen the allowlist. `deploy/ch-remote.sh` runs SQL through
+the VM over IAP, fetching the password on the VM from Secret Manager with the
+instance's own service-account token and handing it to curl on fd 3. Same rule as
+SECRETS.md, same mechanism as `gce-startup.sh`, no new attack surface, and it
+doubles as the schema-application path now that the direct one is gone.
+
+### Shared module extraction
+
+Two binaries writing the same tables must not carry separate copies of the column
+lists. `INSERT ... FORMAT Native` matches rows to the server's block header by
+name, so a drifted list in one binary is a wrong-column write rather than a
+compile error. Moved the row structs, INSERT statements, discriminators, and
+`AccountKind` into `src/schema.rs`, and `connect_clickhouse` into `src/ch.rs`,
+both included by `#[path]` from each binary. Pure move, no call-site changes,
+`cargo check` clean.
+
+### Result
+
+Ran on the VM, 158s, no OOM on the e2-micro.
+
+| table | snapshot rows (`write_version = 0`) | stream rows | distinct accounts |
+|---|---|---|---|
+| account_updates | 140,424 | 51,960 | 140,625 |
+| obligation_snapshots | 139,655 | 4,411 | 139,731 |
+| reserve_snapshots | 557 | 0 | 557 |
+| lending_market_snapshots | 210 | 0 | 210 |
+
+`reserve_snapshots` and `lending_market_snapshots` had never held a row before,
+since the deployed indexer predates those decoders. Distinct accounts went from
+1,166 to 140,625. `snapshot_runs` carries the provenance: slot 437,484,525, scope
+`known`, 2 decode failures, 157,994 ms. Indexer healthy throughout, lag 10s.
+
+Correcting the count in the section above: the first survey said 140,391 accounts
+and the run wrote 140,424. The set grows continuously, so any two
+`getProgramAccounts` calls minutes apart disagree. The number is a reading, not a
+constant.
+
+### The dry run that was not dry
+
+Worth recording because it wrote to production while claiming not to. In
+`run-snapshot.sh` the dry-run flag was emitted as:
+
+```bash
+${DRY_RUN:+echo \"KLEND_SNAPSHOT_DRY_RUN=1\"}
+```
+
+inside an unquoted heredoc. Unquoted heredocs process `\$`, `` \` ``, `\\`, and
+line continuations, but NOT `\"`, so the backslash-quotes survived literally. The
+remote shell then wrote `"KLEND_SNAPSHOT_DRY_RUN=1"` into the env file with the
+quotes included, docker parsed the variable name as `"KLEND_SNAPSHOT_DRY_RUN`, the
+binary never saw the flag, and the "dry" run performed the full write.
+
+No harm done, because that write was the intended next step anyway. The lesson is
+the general one: a guard that has never been observed to *prevent* something is
+not a guard, it is an assumption. Fixed to `${DRY_RUN:+echo KLEND_SNAPSHOT_DRY_RUN=1}`
+and re-verified, this time by confirming `snapshot_runs` stayed at one row.
+
+### Still open
+
+- **The one real gap is still not in `slot_gaps`.** The table is truthful about
+  nothing right now, which will read badly next to a doc that references it.
+  Reconciling it is a single INSERT, deliberately left for a decision rather than
+  done in passing.
+- **Gap detection still depends on catching a reconnect.** A wedge produces a hole
+  no `record_gap` call site can see. The durable fix is to detect the gap at
+  startup by comparing the checkpoint against the slot actually resumed from.
+- **The running container is still the 2026-08-05 image.** A redeploy is now safe
+  (005, 006, 007 are applied) and would give the stream Reserve and LendingMarket
+  decode, but it restarts a healthy indexer, so it is a separate call.
