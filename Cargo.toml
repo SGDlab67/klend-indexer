@@ -23,3 +23,6 @@ yellowstone-grpc-client = "13.2.1"
 yellowstone-grpc-proto = "12.5.0"
 bytemuck = "1"
 klend-interface = { path = "vendor/klend-interface" }
+serde_json = "1.0.151"
+base64 = "0.22"
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "http2", "charset", "json"] }

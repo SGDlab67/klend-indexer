@@ -29,6 +29,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/klend-indexer /usr/local/bin/klend-indexer
+# The one-shot RPC snapshot writer (Phase 2, Option A). Same image on purpose: it
+# shares the decoders and the ClickHouse connect path with the indexer, and it has
+# to run on the VM because the VM is the only host on ClickHouse's IP access list.
+# Reached with `docker run --entrypoint /usr/local/bin/klend-snapshot`.
+COPY --from=builder /build/target/release/snapshot /usr/local/bin/klend-snapshot
 
 # Run unprivileged. The process needs no filesystem writes; all state is in ClickHouse.
 RUN useradd -r -u 10001 klend

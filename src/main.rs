@@ -5,107 +5,39 @@
 //! Pipeline: Validator → Geyser → Yellowstone gRPC → [HERE] → decode → ClickHouse
 
 use std::collections::HashMap;
-use std::fmt;
-use std::sync::LazyLock;
-
-use sha2::{Digest, Sha256};
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use klickhouse::{Bytes, Client, ClientOptions, Row};
 use yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcClient};
 use yellowstone_grpc_proto::geyser::{
-    subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest,
-    SubscribeRequestFilterAccounts,
+    subscribe_update::UpdateOneof,
+    subscribe_request_filter_accounts_filter::Filter as FilterVariant,
+    subscribe_request_filter_accounts_filter_memcmp::Data as MemcmpData,
+    CommitmentLevel, SubscribeRequest, SubscribeRequestAccountsDataSlice,
+    SubscribeRequestFilterAccounts, SubscribeRequestFilterAccountsFilter,
+    SubscribeRequestFilterAccountsFilterMemcmp, SubscribeRequestFilterSlots,
 };
 
+mod ch;
 mod decode;
+mod schema;
 
-/// Candidate klend account struct names. Discriminators are derived from these,
-/// never transcribed. Names are a guess from klend's public structs, not a
-/// verified IDL — a wrong guess simply never matches, it cannot mislabel.
-const CANDIDATE_ACCOUNTS: &[&str] = &[
-    "Reserve",
-    "Obligation",
-    "LendingMarket",
-    "ReferrerTokenState",
-    "UserMetadata",
-    "ReferrerState",
-    "ShortUrl",
-    "GlobalConfig",
-];
+// Glob-imported so the moved items keep their original unqualified names here and
+// the extraction stays a pure move, with no call-site churn to review.
+use ch::connect_clickhouse;
+use schema::*;
 
-/// `discriminator -> struct name`, derived once from [`CANDIDATE_ACCOUNTS`].
-static DISCRIMINATORS: LazyLock<HashMap<[u8; 8], &'static str>> = LazyLock::new(|| {
-    CANDIDATE_ACCOUNTS
-        .iter()
-        .map(|name| {
-            let hash = Sha256::digest(format!("account:{name}").as_bytes());
-            let disc: [u8; 8] = hash[..8].try_into().expect("sha256 digest is 32 bytes");
-            (disc, *name)
-        })
-        .collect()
-});
 
-/// What an account's leading bytes tell us about its type.
-///
-/// Three variants rather than `Option<&str>`: "too short to be tagged" and
-/// "tagged but unnamed" are different facts and must not share a `None`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-enum AccountKind {
-    /// Discriminator matched a name in [`CANDIDATE_ACCOUNTS`].
-    Known(&'static str),
-    /// Well-formed 8-byte tag, not one we can name. Carries the raw bytes.
-    Unknown([u8; 8]),
-    /// Fewer than 8 bytes of payload — cannot carry a discriminator.
-    Untagged { len: usize },
+/// Current wall-clock time as fractional Unix seconds. Used to compare against a
+/// message's server-set `created_at` for the runtime lag metric.
+fn now_unix() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
-// `From`, not `TryFrom`: classification is total. An unknown account type is
-// data to record, not an error to propagate.
-impl From<&[u8]> for AccountKind {
-    fn from(data: &[u8]) -> Self {
-        let Some(head) = data.get(..8) else {
-            return AccountKind::Untagged { len: data.len() };
-        };
-        let disc: [u8; 8] = head.try_into().expect("slice of exactly 8 bytes");
-
-        match DISCRIMINATORS.get(&disc) {
-            Some(name) => AccountKind::Known(name),
-            None => AccountKind::Unknown(disc),
-        }
-    }
-}
-
-impl fmt::Display for AccountKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Must route through `f.pad`, not `write!` — otherwise width/alignment
-        // specs like `{kind:<22}` are silently ignored.
-        let text = match self {
-            AccountKind::Known(name) => (*name).to_owned(),
-            AccountKind::Unknown(disc) => format!("unknown:{}", hex8(disc)),
-            AccountKind::Untagged { len } => format!("untagged:{len}b"),
-        };
-        f.pad(&text)
-    }
-}
-
-/// Lowercase hex for a discriminator.
-fn hex8(bytes: &[u8; 8]) -> String {
-    use fmt::Write as _;
-    bytes.iter().fold(String::with_capacity(16), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
-}
-
-/// Kamino Lend production mainnet program ID.
-/// Staging equivalent: SLendK7ySfcEzyaFqy93gDnD3RtrpXJcnRwb6zFHJSh
-const KLEND_PROGRAM: &str = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD";
-
-/// Checkpoint stream label. One row per stream in `ingest_checkpoint`; a second
-/// subscription (staging, backfill) would use a different label.
-const STREAM: &str = "klend";
 
 /// Flush when the buffer reaches this many rows. Bounds memory and insert size;
 /// tuned small since klend traffic is light (KB/s), so batches stay modest.
@@ -116,81 +48,25 @@ const BATCH_MAX_ROWS: usize = 4096;
 /// through a quiet span; the timer bounds how stale the tail can get.
 const FLUSH_INTERVAL_SECS: u64 = 2;
 
+/// How often to log the lag/liveness line. Frequent enough to watch catch-up
+/// after a reconnect, sparse enough not to bury the per-account log lines.
+const LAG_INTERVAL_SECS: u64 = 10;
+
 /// Hard ceiling on a single ClickHouse insert. Inserts are tiny (KB), so this is
 /// far above normal; its job is to turn a half-open connection that never acks into
 /// a fast error-and-restart instead of an indefinite hang. See `Writer::flush`.
 const INSERT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Explicit column lists, deliberately: without them the server's INSERT header
-/// includes every insertable column — for `account_updates` that means the
-/// `ingested_at` DEFAULT column, which the row below does not supply, so the
-/// block would be short a column. Naming columns pins the header to exactly what
-/// we send. MATERIALIZED (`data_len`) and ALIAS (`pubkey_b58`) are never
-/// insertable and are excluded regardless.
-const INSERT_UPDATES_SQL: &str = "INSERT INTO account_updates \
-    (slot, write_version, pubkey, kind, owner, lamports, data) FORMAT Native";
-const INSERT_CHECKPOINT_SQL: &str = "INSERT INTO ingest_checkpoint \
-    (stream, last_slot, last_write_version) FORMAT Native";
-
-/// One raw account update, shaped for `klend.account_updates`. Field names are
-/// the column names: klickhouse matches a row to the server's block header by
-/// name, so field order here is free — kept in schema order for readers.
-#[derive(Row, Debug)]
-struct AccountUpdateRow {
-    slot: u64,
-    write_version: u64,
-    /// FixedString(32) — raw 32 bytes, not base58. `Bytes` maps to CH String/
-    /// FixedString; the readable form is a query-time ALIAS in the schema.
-    pubkey: Bytes,
-    /// LowCardinality(String) — a plain `String` serializes into it.
-    kind: String,
-    owner: Bytes,
-    lamports: u64,
-    /// Undecoded payload → CH String. Decoding is deliberately not done here.
-    data: Bytes,
-}
-
-/// A checkpoint advance. `updated_at` is a schema DEFAULT, so it is not sent.
-#[derive(Row, Debug)]
-struct CheckpointRow {
-    stream: String,
-    last_slot: u64,
-    last_write_version: u64,
-}
-
-/// Decoded Obligation snapshot — one row per Obligation account update.
-#[derive(Row, Debug)]
-struct ObligationSnapshotRow {
-    slot: u64,
-    write_version: u64,
-    pubkey: Bytes,
-    /// Obligation owner.
-    owner: Bytes,
-    /// Lending market this obligation belongs to.
-    lending_market: Bytes,
-    num_deposits: u8,
-    num_borrows: u8,
-    /// Health factor in bps (×10^6). u64::MAX = no debt / infinite health.
-    /// A value of 1_050_000 means health = 1.05.
-    health_factor_bps: u64,
-    /// Flags: bit 0 = has_debt, bit 1 = elevation_group active, bit 2 = autodeleverage active.
-    flags: u8,
-    elevation_group: u8,
-    referrer: Bytes,
-}
-
-const INSERT_SNAPSHOT_SQL: &str = "INSERT INTO obligation_snapshots \
-    (slot, write_version, pubkey, owner, lending_market, \
-     num_deposits, num_borrows, health_factor_bps, flags, elevation_group, referrer) \
-     FORMAT Native";
 
 /// Buffered writer: accumulates rows, then commits a batch and advances the
-/// checkpoint in one `flush`. Two buffers: raw account_updates rows, and
-/// decoded obligation_snapshots rows.
+/// checkpoint in one `flush`. Four buffers: raw account_updates rows,
+/// decoded obligation_snapshots, reserve_snapshots, and lending_market_snapshots.
 struct Writer {
     client: Client,
     buf: Vec<AccountUpdateRow>,
     snap_buf: Vec<ObligationSnapshotRow>,
+    reserve_buf: Vec<ReserveSnapshotRow>,
+    lm_buf: Vec<LendingMarketSnapshotRow>,
 }
 
 impl Writer {
@@ -199,34 +75,81 @@ impl Writer {
         self.snap_buf.push(row);
     }
 
+    /// Push a decoded Reserve snapshot into the reserve buffer.
+    fn push_reserve_snapshot(&mut self, row: ReserveSnapshotRow) {
+        self.reserve_buf.push(row);
+    }
+
+    /// Push a decoded LendingMarket snapshot into the lending market buffer.
+    fn push_lm_snapshot(&mut self, row: LendingMarketSnapshotRow) {
+        self.lm_buf.push(row);
+    }
+
+    /// Record a detected stream gap. This is fire-and-forget: if the insert
+    /// fails, the caller logs it and continues — gap recording must never
+    /// block the reconnect path.
+    async fn record_gap(
+        &mut self,
+        stream: &str,
+        start_slot: u64,
+        end_slot: u64,
+        reason: &str,
+    ) -> Result<()> {
+        self.client
+            .insert_native_block(
+                INSERT_GAP_SQL,
+                vec![GapRow {
+                    stream: stream.to_owned(),
+                    start_slot,
+                    end_slot,
+                    reason: reason.to_owned(),
+                }],
+            )
+            .await
+            .map_err(Into::into)
+    }
+
     /// Commit the buffered rows, then advance the checkpoint. Order is
     /// load-bearing: data first, checkpoint second (§8c — prefer duplicates over
     /// holes; a checkpoint ahead of its data is a silent hole). No-op when empty.
     async fn flush(&mut self) -> Result<()> {
-        if self.buf.is_empty() && self.snap_buf.is_empty() {
+        if self.buf.is_empty() && self.snap_buf.is_empty() && self.reserve_buf.is_empty() && self.lm_buf.is_empty() {
             return Ok(());
         }
         // Stream order is slot order, so the last buffered row is the high-water
         // mark. Read it before `take` moves the buffer into the insert.
         let (last_slot, last_write_version) = {
-            // Prefer the raw buffer's last row; snapshot rows track same (slot, write_version)
-            // pairs so the raw buffer's tail is the authoritative high-water mark.
+            // Prefer the raw buffer's last row; snapshot, reserve, and lm rows
+            // track same (slot, write_version) pairs so the raw buffer's tail is
+            // the authoritative high-water mark.
             let slot = if !self.buf.is_empty() {
                 self.buf.last().unwrap().slot
-            } else {
+            } else if !self.snap_buf.is_empty() {
                 self.snap_buf.last().unwrap().slot
+            } else if !self.reserve_buf.is_empty() {
+                self.reserve_buf.last().unwrap().slot
+            } else {
+                self.lm_buf.last().unwrap().slot
             };
             let wv = if !self.buf.is_empty() {
                 self.buf.last().unwrap().write_version
-            } else {
+            } else if !self.snap_buf.is_empty() {
                 self.snap_buf.last().unwrap().write_version
+            } else if !self.reserve_buf.is_empty() {
+                self.reserve_buf.last().unwrap().write_version
+            } else {
+                self.lm_buf.last().unwrap().write_version
             };
             (slot, wv)
         };
         let rows = std::mem::take(&mut self.buf);
         let snap_rows = std::mem::take(&mut self.snap_buf);
+        let reserve_rows = std::mem::take(&mut self.reserve_buf);
+        let lm_rows = std::mem::take(&mut self.lm_buf);
         let n = rows.len();
         let n_snap = snap_rows.len();
+        let n_reserve = reserve_rows.len();
+        let n_lm = lm_rows.len();
 
         // Bound every insert with a timeout. A ClickHouse Cloud scaling/maintenance
         // event can leave the native connection HALF-OPEN: writes never error, they
@@ -256,6 +179,30 @@ impl Writer {
             .context("insert obligation_snapshots batch")?;
         }
 
+        // LendingMarket snapshot insert — same timeout guard.
+        if !lm_rows.is_empty() {
+            tokio::time::timeout(
+                INSERT_TIMEOUT,
+                self.client
+                    .insert_native_block(INSERT_LM_SNAPSHOT_SQL, lm_rows),
+            )
+            .await
+            .context("insert lending_market_snapshots batch timed out")?
+            .context("insert lending_market_snapshots batch")?;
+        }
+
+        // Reserve snapshot insert — same timeout guard.
+        if !reserve_rows.is_empty() {
+            tokio::time::timeout(
+                INSERT_TIMEOUT,
+                self.client
+                    .insert_native_block(INSERT_RESERVE_SNAPSHOT_SQL, reserve_rows),
+            )
+            .await
+            .context("insert reserve_snapshots batch timed out")?
+            .context("insert reserve_snapshots batch")?;
+        }
+
         tokio::time::timeout(
             INSERT_TIMEOUT,
             self.client.insert_native_block(
@@ -276,65 +223,109 @@ impl Writer {
         } else {
             String::new()
         };
+        let reserve_info = if n_reserve > 0 {
+            format!(", {n_reserve} reserve snapshots")
+        } else {
+            String::new()
+        };
+        let lm_info = if n_lm > 0 {
+            format!(", {n_lm} lending market snapshots")
+        } else {
+            String::new()
+        };
         eprintln!(
-            "flushed {n} rows{snap_info}; checkpoint slot={last_slot} write_version={last_write_version}"
+            "flushed {n} rows{snap_info}{reserve_info}{lm_info}; checkpoint slot={last_slot} write_version={last_write_version}"
         );
         Ok(())
     }
 }
 
-/// Connect the ClickHouse sink, plain or TLS. Hosted ClickHouse Cloud speaks
-/// native-secure on :9440; the local docker sink speaks plain native on :9000.
-/// `url` is `host:port`; when secure, the host part is also the TLS SNI name.
-async fn connect_clickhouse(url: &str, secure: bool, options: ClientOptions) -> Result<Client> {
-    if !secure {
-        return Client::connect(url, options).await.map_err(Into::into);
-    }
-
-    // Trust anchors baked into the binary (webpki-roots), so a stripped container
-    // image needs no OS cert store. The crypto backend is the ring provider
-    // installed as process default at the top of `main`.
-    let mut roots = tokio_rustls::rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let config = tokio_rustls::rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
-
-    // SNI name is the host without the port. connect_tls resolves `url` for the
-    // TCP connection and uses this name for the certificate check.
-    let host = url.rsplit_once(':').map(|(h, _)| h).unwrap_or(url);
-    let server_name = tokio_rustls::rustls::pki_types::ServerName::try_from(host.to_owned())
-        .with_context(|| format!("invalid TLS server name {host:?}"))?;
-
-    Client::connect_tls(url, options, server_name, &connector)
-        .await
-        .map_err(Into::into)
-}
-
 /// Build the subscription request. `from_slot` resumes the stream from a past
 /// slot on reconnect; `None` starts from the tip. Extracted so the reconnect
 /// loop can rebuild the request each attempt with a fresh resume point.
+///
+/// Uses TWO filters with memcmp discriminator matching so Obligations get full
+/// data (needed for decode) while Reserves are trimmed via `accounts_data_slice`
+/// at the request level. The slice length is 3344 — the full Obligation wire
+/// size (8-byte discriminator + 3336-byte struct), so Obligation decode is
+/// unaffected. Reserves are cut from 8624→3344 bytes (61% per-Reserve saving).
 fn build_request(from_slot: Option<u64>) -> SubscribeRequest {
-    // Filters are a map; the key is a label the server echoes back on every
-    // matching update.
+    // Helper: build a memcmp filter that matches the given 8-byte discriminator
+    // at account-data offset 0.
+    fn memcmp_disc(disc: &[u8; 8]) -> SubscribeRequestFilterAccountsFilter {
+        SubscribeRequestFilterAccountsFilter {
+            filter: Some(FilterVariant::Memcmp(
+                SubscribeRequestFilterAccountsFilterMemcmp {
+                    offset: 0,
+                    data: Some(MemcmpData::Bytes(disc.to_vec())),
+                },
+            )),
+        }
+    }
+
     let mut accounts = HashMap::new();
+
+    // ── Obligation filter: full data, no slice ──
     accounts.insert(
-        "klend".to_owned(),
+        "klend-obligation".to_owned(),
         SubscribeRequestFilterAccounts {
             owner: vec![KLEND_PROGRAM.to_owned()],
+            filters: vec![memcmp_disc(&OBLIGATION_DISC)],
+            nonempty_txn_signature: Some(true), // skip vote transactions
+            ..Default::default()
+        },
+    );
 
-            // ⚠️  An EMPTY owner vec means "no filter" — every account update on
-            // mainnet, silently, on a bandwidth-billed stream. Never empty this.
-            //
-            // Later: `filters` (memcmp on discriminator) and `accounts_data_slice`
-            // (trim payloads) go here.
+    // ── Reserve filter: memcmp on RESERVE_DISC ──
+    accounts.insert(
+        "klend-reserve".to_owned(),
+        SubscribeRequestFilterAccounts {
+            owner: vec![KLEND_PROGRAM.to_owned()],
+            filters: vec![memcmp_disc(&RESERVE_DISC)],
+            nonempty_txn_signature: Some(true),
+            ..Default::default()
+        },
+    );
+
+    // ── LendingMarket filter: memcmp on LENDING_MARKET_DISC ──
+    accounts.insert(
+        "klend-lending-market".to_owned(),
+        SubscribeRequestFilterAccounts {
+            owner: vec![KLEND_PROGRAM.to_owned()],
+            filters: vec![memcmp_disc(&LENDING_MARKET_DISC)],
+            nonempty_txn_signature: Some(true),
+            ..Default::default()
+        },
+    );
+
+    // Live chain tip, for the runtime lag metric. A slots-only subscription is
+    // cheap (a slot notification is a bare number) and streams the tip continuously,
+    // even through klend-quiet spans when no account updates arrive. filter_by_
+    // commitment pins it to the account stream's CONFIRMED level, so `tip` and the
+    // last processed slot are directly comparable. This is the in-band replacement
+    // for a separate getSlot RPC: no extra endpoint, no round-trip, same answer.
+    let mut slots = HashMap::new();
+    slots.insert(
+        "klend-tip".to_owned(),
+        SubscribeRequestFilterSlots {
+            filter_by_commitment: Some(true),
             ..Default::default()
         },
     );
 
     SubscribeRequest {
         accounts,
+        slots,
+
+        // ⚠️ accounts_data_slice is REQUEST-level (not per-filter), so all
+        // matched accounts share the same trim.  4664 = full LendingMarket wire
+        // size (8-byte discriminator + 4656-byte struct); LendingMarket decode
+        // requires the full payload.  Obligation (3344B) and Reserve (8624B)
+        // also share this trim; Reserves are cut from 8624→4664 (~46% savings).
+        accounts_data_slice: vec![SubscribeRequestAccountsDataSlice {
+            offset: 0,
+            length: 4664,
+        }],
 
         // CONFIRMED: supermajority voted, not finalized. PROCESSED rolls back on
         // forks; FINALIZED is ~13s behind. Fork handling lands in Phase 1.
@@ -419,6 +410,8 @@ async fn main() -> Result<()> {
                 client,
                 buf: Vec::with_capacity(BATCH_MAX_ROWS),
                 snap_buf: Vec::with_capacity(BATCH_MAX_ROWS),
+                reserve_buf: Vec::with_capacity(BATCH_MAX_ROWS),
+                lm_buf: Vec::with_capacity(BATCH_MAX_ROWS),
             })
         }
         _ => {
@@ -453,11 +446,26 @@ async fn main() -> Result<()> {
     let mut slots_with_updates: u64 = 0;
     let mut reconnects: u64 = 0;
 
+    // ── Runtime lag / liveness state ──
+    // `tip_slot`: newest slot the chain has reached, from the slots subscription.
+    // `last_produced_unix`: server produce-time (`created_at`) of the last message
+    // we drained — the keeping-up signal, and it stays fresh even in klend-quiet
+    // spans because slot notifications keep arriving. `acct_since_lag`: account
+    // updates since the last lag line, for a throughput readout. These persist
+    // across reconnects; tip is simply re-learned from the next slot message.
+    let mut tip_slot: u64 = 0;
+    let mut last_produced_unix: Option<f64> = None;
+    let mut acct_since_lag: u64 = 0;
+
     // Flush the buffer at least every FLUSH_INTERVAL_SECS even when it has not
     // filled. The first tick fires immediately, so consume it before the loop.
     let mut flush_tick =
         tokio::time::interval(std::time::Duration::from_secs(FLUSH_INTERVAL_SECS));
     flush_tick.tick().await;
+
+    // Lag line cadence. Same immediate-first-tick quirk, so consume it up front.
+    let mut lag_tick = tokio::time::interval(std::time::Duration::from_secs(LAG_INTERVAL_SECS));
+    lag_tick.tick().await;
 
     // Supervised shutdown: docker/systemd send SIGTERM, an interactive stop sends
     // SIGINT. Either must flush the last partial batch, not drop it (same loss
@@ -518,6 +526,20 @@ async fn main() -> Result<()> {
                     "subscribe from_slot={s} failed ({e}); replay window likely exceeded, \
                      restarting from tip. GAP {s}..tip is UNFILLED (needs Block 2 backfill)."
                 );
+                if let Some(w) = writer.as_mut() {
+                    // `last_slot` is the tip from the previous session (0 on first run).
+                    if let Err(gap_err) = w
+                        .record_gap(
+                            STREAM,
+                            s,
+                            last_slot,
+                            "subscribe failed: replay window exceeded",
+                        )
+                        .await
+                    {
+                        eprintln!("failed to record gap: {gap_err:#}");
+                    }
+                }
                 force_tip = true;
                 continue 'reconnect;
             }
@@ -545,10 +567,20 @@ async fn main() -> Result<()> {
                         }
                     };
 
+                    // Server produce-time of THIS message, any variant. Drives the
+                    // keeping-up signal in the lag line: as long as we drain the
+                    // stream promptly this tracks ~now, independent of klend activity,
+                    // because slot notifications carry it too. A half-open connection
+                    // or a slow consumer makes it go stale.
+                    if let Some(ts) = message.created_at.as_ref() {
+                        last_produced_unix = Some(ts.seconds as f64 + ts.nanos as f64 / 1e9);
+                    }
+
                     match message.update_oneof {
                         Some(UpdateOneof::Account(update)) => {
                             let Some(info) = update.account else { continue 'stream };
                             got_data = true;
+                            acct_since_lag += 1;
 
                             let kind = AccountKind::from(info.data.as_slice());
                             // Captured now so the payload Vec can be moved into the row below.
@@ -620,6 +652,78 @@ async fn main() -> Result<()> {
                                 }
                             }
 
+                            // ── Decode Reserve accounts into snapshots ──
+                            if matches!(kind, AccountKind::Known("Reserve")) {
+                                if let Some(w) = writer.as_mut() {
+                                    match decode::decode_reserve(&info.data) {
+                                        Some(Ok(decoded)) => {
+                                            w.push_reserve_snapshot(ReserveSnapshotRow {
+                                                slot: update.slot,
+                                                write_version: info.write_version,
+                                                pubkey: Bytes(info.pubkey.clone()),
+                                                lending_market: Bytes(decoded.lending_market.to_vec()),
+                                                liquidity_mint: Bytes(decoded.liquidity_mint.to_vec()),
+                                                supply_vault: Bytes(decoded.supply_vault.to_vec()),
+                                                fee_vault: Bytes(decoded.fee_vault.to_vec()),
+                                                available_amount: decoded.available_liquidity,
+                                                borrowed_amount_sf: decoded.borrowed_amount,
+                                                market_price_sf: decoded.market_price,
+                                                mint_decimals: decoded.mint_decimals,
+                                                acc_protocol_fees_sf: decoded.accumulated_protocol_fees,
+                                                acc_referrer_fees_sf: decoded.accumulated_referrer_fees,
+                                            });
+                                        }
+                                        Some(Err(e)) => {
+                                            eprintln!(
+                                                "decode Reserve failed for {}: {e:#}",
+                                                bs58::encode(&info.pubkey).into_string()
+                                            );
+                                        }
+                                        None => {
+                                            eprintln!(
+                                                "decode_reserve returned None for {} (size {})",
+                                                bs58::encode(&info.pubkey).into_string(),
+                                                data_len,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
+                            // ── Decode LendingMarket accounts into snapshots ──
+                            if matches!(kind, AccountKind::Known("LendingMarket")) {
+                                if let Some(w) = writer.as_mut() {
+                                    match decode::decode_lending_market(&info.data) {
+                                        Some(Ok(decoded)) => {
+                                            w.push_lm_snapshot(LendingMarketSnapshotRow {
+                                                slot: update.slot,
+                                                write_version: info.write_version,
+                                                pubkey: Bytes(info.pubkey.clone()),
+                                                owner: Bytes(decoded.owner.to_vec()),
+                                                quote_currency: Bytes(decoded.quote_currency.to_vec()),
+                                                flags: decoded.flags,
+                                                referral_fee_bps: decoded.referral_fee_bps,
+                                                liquidation_max_debt_close_factor_pct: decoded.liquidation_max_debt_close_factor_pct,
+                                                name: Bytes(decoded.name.to_vec()),
+                                            });
+                                        }
+                                        Some(Err(e)) => {
+                                            eprintln!(
+                                                "decode LendingMarket failed for {}: {e:#}",
+                                                bs58::encode(&info.pubkey).into_string()
+                                            );
+                                        }
+                                        None => {
+                                            eprintln!(
+                                                "decode_lending_market returned None for {} (size {})",
+                                                bs58::encode(&info.pubkey).into_string(),
+                                                data_len,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
                             // Buffer for the batched write, moving the payload Vecs (no
                             // clone) — this is their last use, `data_len` already captured.
                             if let Some(w) = writer.as_mut() {
@@ -632,7 +736,7 @@ async fn main() -> Result<()> {
                                     lamports: info.lamports,
                                     data: Bytes(info.data),
                                 });
-                                if w.buf.len() >= BATCH_MAX_ROWS || w.snap_buf.len() >= BATCH_MAX_ROWS {
+                                if w.buf.len() >= BATCH_MAX_ROWS || w.snap_buf.len() >= BATCH_MAX_ROWS || w.reserve_buf.len() >= BATCH_MAX_ROWS || w.lm_buf.len() >= BATCH_MAX_ROWS {
                                     w.flush().await?;
                                 }
                             }
@@ -643,6 +747,13 @@ async fn main() -> Result<()> {
                                 eprintln!("slot budget reached (span {slot_span}); stopping");
                                 break 'stream;
                             }
+                        }
+
+                        // Live chain tip for the lag metric. Take the max: slot
+                        // notifications for different statuses can arrive slightly
+                        // out of order, and tip must never move backward.
+                        Some(UpdateOneof::Slot(slot_update)) => {
+                            tip_slot = tip_slot.max(slot_update.slot);
                         }
 
                         // Keepalive.
@@ -657,6 +768,38 @@ async fn main() -> Result<()> {
                 _ = flush_tick.tick(), if writer.is_some() => {
                     if let Some(w) = writer.as_mut() {
                         w.flush().await?;
+                    }
+                }
+
+                // Runtime lag line. Reads only in-memory counters and the slot
+                // stream, so it runs in sampling mode too. Two independent readings:
+                //   behind     — slots between chain tip and the last klend account we
+                //                processed. Large-and-shrinking = catching up after a
+                //                reconnect. Grows harmlessly during klend-quiet spans
+                //                (tip advances, no accounts to process), so read it
+                //                together with stream_lag, not alone.
+                //   stream_lag — wall seconds between now and the server's produce
+                //                time of the last message drained. This is the real
+                //                keeping-up signal: ~0 while healthy even in quiet
+                //                spans; climbs if we fall behind or the socket half-opens.
+                _ = lag_tick.tick() => {
+                    if tip_slot > 0 {
+                        let behind = tip_slot.saturating_sub(last_slot);
+                        let rate = acct_since_lag as f64 / LAG_INTERVAL_SECS as f64;
+                        match last_produced_unix {
+                            Some(t) => eprintln!(
+                                "lag tip={tip_slot} processed={last_slot} behind={behind} slots \
+                                 (~{:.0}s) | stream_lag={:.1}s | {rate:.1} acct/s",
+                                behind as f64 * 0.4,
+                                (now_unix() - t).max(0.0),
+                            ),
+                            None => eprintln!(
+                                "lag tip={tip_slot} processed={last_slot} behind={behind} slots \
+                                 (~{:.0}s) | stream_lag=? | {rate:.1} acct/s",
+                                behind as f64 * 0.4,
+                            ),
+                        }
+                        acct_since_lag = 0;
                     }
                 }
 
@@ -709,6 +852,20 @@ async fn main() -> Result<()> {
                 "resume from_slot={s} unreachable (no data before error); starting from tip. \
                  GAP {s}..tip is UNFILLED (needs Block 2 backfill)."
             );
+            if let Some(w) = writer.as_mut() {
+                // `last_slot` is the tip slot after the just-ended session.
+                if let Err(gap_err) = w
+                    .record_gap(
+                        STREAM,
+                        s,
+                        last_slot,
+                        "resume unreachable: no data before stream error",
+                    )
+                    .await
+                {
+                    eprintln!("failed to record gap: {gap_err:#}");
+                }
+            }
             force_tip = true;
         }
 
