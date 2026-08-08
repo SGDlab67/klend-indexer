@@ -1,7 +1,22 @@
 FROM node:22-alpine
 WORKDIR /app
-COPY web/proxy.js .
-COPY web/index.html .
+
+# The whole web/ directory, because two entrypoints share three of these files.
+# queries.js and chclient.js are imported by BOTH proxy.js and export.js, and a
+# COPY list that names files individually is the same drift hazard the shared
+# module was created to remove: it would build cleanly and fail at require time.
+COPY web/ ./
+
+# No dependencies to install. Everything here is Node stdlib on purpose: this
+# image holds a database credential and runs unattended, so its supply chain is
+# worth keeping at zero third-party packages.
+
 EXPOSE 8080
 USER node
+
+# Default entrypoint is the live proxy, used for local development. The static
+# generator is the deployed path and is reached with
+#   docker run --entrypoint node IMAGE export.js
+# Same image on purpose: the generator and the proxy must issue identical
+# queries, and sharing an image is the cheapest way to guarantee they do.
 CMD ["node", "proxy.js"]
