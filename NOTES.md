@@ -727,6 +727,11 @@ accumulates nothing.
 unrecoverable from the live stream. Logged as an UNFILLED gap for Block 2 archive backfill. Accepted, not
 fixed here.
 
+**Correction (2026-08-08):** The ~437387800 estimate was slightly off. The actual end slot
+(derived from `account_updates` data and now recorded in `slot_gaps`) is **437387843**, off by
+43 slots. The gap is now formally recorded in `klend.slot_gaps` as
+`437313969 → 437387843` (73,874 slots).
+
 ### Lesson banked
 **Process liveness is not data liveness.** The only health signal that would have caught this is INGEST
 FRESHNESS: `dateDiff('second', max(ingested_at), now())`. A monitor that alerts when that exceeds a few
@@ -1028,3 +1033,131 @@ and re-verified, this time by confirming `snapshot_runs` stayed at one row.
 - **The running container is still the 2026-08-05 image.** A redeploy is now safe
   (005, 006, 007 are applied) and would give the stream Reserve and LendingMarket
   decode, but it restarts a healthy indexer, so it is a separate call.
+
+## Day 7: delegated agents shipped the redeploy, and a public SQL endpoint (2026-08-07)
+
+Three tasks went out to an external agent runner with written briefs
+(`docs/agents/delegation-prompts.md`): redeploy the indexer, reconcile the known
+gap into `slot_gaps`, and add startup gap detection. Two came back. The third was
+not attempted. Something else came back that nobody asked for.
+
+### The redeploy worked, and is verified
+
+The stream had been identifying `kind=Reserve` in its logs for two days while
+writing nothing to `reserve_snapshots`, because the decoders that populate it
+existed only in uncommitted code. That is now shipped.
+
+| table | before | after |
+|---|---|---|
+| reserve_snapshots rows | 557 | 3,225 |
+| reserve_snapshots max slot | 437,484,525 (snapshot) | 437,912,412 (live) |
+| lending_market_snapshots | 210 @ 437,484,520 | unchanged |
+
+LendingMarket staying flat is correct, not a failure: those accounts change
+rarely, whereas reserve state moves continuously. The acceptance criterion was
+always `reserve_snapshots.max(slot)` advancing past the snapshot slot, and it
+did. Resume was lossless and no gap was logged by the restart.
+
+### The gap is recorded
+
+`slot_gaps` holds one row: `437313969 → 437387843`, 73,874 slots, `filled = 0`.
+The end slot was derived from the data rather than taken from this worklog, which
+had estimated ~437387800. The correction is noted inline in the Day 5 incident
+entry above and repeated here so the two records agree.
+
+### The dashboard shipped an unauthenticated public SQL endpoint
+
+A web UI appeared on the VM at port 8080 that no brief asked for, and the
+redeploy brief explicitly said not to modify source files. It was built as:
+
+- `POST /` read the request body and forwarded it to ClickHouse **verbatim as
+  SQL**. No authentication, no allowlist, no statement parsing, `Access-Control-
+  Allow-Origin: *`.
+- It authenticated as `default`, the same credential `apply-schema-cloud.sh` uses
+  for `CREATE TABLE`, so it held DDL rights.
+- A new firewall rule, `allow-klend-proxy`, opened tcp:8080 to `0.0.0.0/0`, plain
+  HTTP.
+
+Composed: any host on the internet could run `DROP DATABASE klend`. The severity
+is specific to this system rather than generic. Yellowstone serves only the tip
+and cannot re-serve old slots, so a dropped table is not a restore-from-backup
+event, it is permanent loss. The `slot_gaps` row recorded three paragraphs above
+is the measured price of eight hours of that: 73,874 slots. The whole dataset is
+that failure times four hundred.
+
+Two smaller things travelled with it: the live ClickHouse hostname was hardcoded
+back into `web/proxy.js` after being moved to the gitignored `deploy/local.env`
+earlier the same day, and the VM's external IP was hardcoded into the dashboard.
+Both in a public repo.
+
+**The lesson is about the brief, not the agent.** Each prompt stated what to do
+and the invariants to preserve. None stated the boundary of what must not be
+built. "Do not modify source files" was read as a constraint on the redeploy
+rather than a scope limit on the session. A brief that enumerates goals without
+enumerating the blast radius leaves the agent to infer the blast radius, and an
+agent optimising for a visible deliverable will infer generously. Note the
+symmetry with the Day 5 lesson: there, a guard that had never been observed to
+prevent anything turned out to be an assumption. Here, a boundary that was never
+written down turned out not to exist.
+
+### Remediation
+
+The UI is worth keeping, so it was rebuilt rather than deleted.
+
+1. **The client cannot supply SQL.** Every statement is fixed server-side in a
+   named map in `web/proxy.js`; the dashboard calls `GET /api/<name>`. Request
+   data never reaches a query string, so there is nothing to inject into. `POST`
+   answers 405 explicitly rather than 404, so anything still pointed at the old
+   entry point fails visibly.
+2. **A SELECT-only credential.** `deploy/create-readonly-user.sh` creates
+   `klend_ro` with `GRANT SELECT ON klend.*` and nothing else, password generated
+   locally and written only to Secret Manager over stdin. The proxy refuses to
+   boot as `default` unless an explicitly named override is set, which is the
+   guard that would have prevented the original incident.
+3. **Cost ceilings.** `readonly=2` plus `max_execution_time`, `max_result_rows`,
+   and `max_rows_to_read`, each pinned with a trailing `MAX` so a caller can
+   tighten them but never raise them. A 10s response cache collapses the
+   dashboard's 15s poll across all viewers into one upstream query per endpoint,
+   because ClickHouse Cloud is billed per byte scanned and every panel runs
+   `FINAL`.
+4. **Hostname from the environment**, never baked into an image built from a
+   public repo. The proxy fails closed if `CH_HOST` is unset.
+
+`readonly=1` was the first choice and is wrong: it forbids writes *and* forbids
+changing settings, so ClickHouse rejects the very cost limits being sent with it.
+`readonly=2` forbids INSERT/ALTER/CREATE/DROP while still allowing a caller to
+tighten limits, which is the combination actually wanted. The grants remain the
+primary control; the setting is the second layer.
+
+Three implementation bugs worth banking, all found by running the thing:
+
+- Password generation died silently at exit 141. `tr -dc ... < /dev/urandom |
+  head -c 40` kills `tr` with SIGPIPE when head closes the pipe, `pipefail`
+  propagates 141, and `set -e` aborted the script before it printed a single
+  line. Reading a bounded slice and using `cut` fixes it. An empty log and a
+  nonzero exit is a worse failure signature than an error message.
+- ClickHouse setting constraints take the verb directly (`max_execution_time = 15
+  MAX 15`). There is no `CONSTRAINT` keyword, unlike in a table definition.
+- COS docker is not pre-authenticated for Artifact Registry, so the pull failed
+  as "Unauthenticated request" until `run-proxy.sh` did the same
+  `docker login -u oauth2accesstoken` dance `gce-startup.sh` already does.
+
+And one self-inflicted: the boot log hardcoded `readonly=1` and kept printing it
+after the setting moved to 2, so the log asserted a security property the process
+was not applying. It now reads the value back from the settings object. A log
+line that restates a constant instead of reading it is a lie waiting for someone
+to change the constant.
+
+### Still open
+
+- **The firewall is still `0.0.0.0/0` on tcp:8080.** Narrowing it requires an
+  operator: the sandbox refuses `gcloud compute firewall-rules update`. The
+  endpoint is no longer an admin SQL console, so this is now an exposure of
+  read-only aggregate klend data over plain HTTP rather than a data-loss risk,
+  but it is still wider than it should be. Command is in the Day 7 handoff.
+- **No TLS and no auth on the dashboard.** Acceptable only while the source range
+  is a single IP. Anything wider needs both.
+- **Startup gap detection was never attempted** (Agent C). Unchanged from Day 6:
+  a wedge still produces a hole no `record_gap` call site can observe.
+- **Secret Manager has three versions** of `klend-clickhouse-readonly-password`,
+  two of them from failed runs. Only `latest` is used. Harmless, worth pruning.
