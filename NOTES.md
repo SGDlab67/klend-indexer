@@ -1161,3 +1161,54 @@ to change the constant.
   a wedge still produces a hole no `record_gap` call site can observe.
 - **Secret Manager has three versions** of `klend-clickhouse-readonly-password`,
   two of them from failed runs. Only `latest` is used. Harmless, worth pruning.
+
+## 2026-08-07 — Phase 2 Progress Update
+
+Full senior-engineer assessment in Zero_Copy:
+`Research/rust-solana-data-career/klend-indexer-phase2-progress-update.md`
+
+Summary of what shipped:
+
+### Deploy (discriminator memcmp build)
+- Four pre-flight gates: rollback digest captured, owner non-empty in all three
+  filters confirmed by pasting lines, literal project path override for Cloud Build.
+- Build succeeded, container restarted, `resuming from checkpoint slot=437903892
+  (inclusive)` — not a tip restart.
+- **reserve_snapshots advancing:** count 557→585+, max slot from 437,484,525→437,904,089+.
+  The whole point of the discriminator memcmp build.
+
+### Slot gap formally recorded
+- Derivation query confirmed gap 437,313,969→437,387,843 (73,874 slots).
+- Background deltas 1-96 slots judged normal klend quiet spans — not gaps.
+- NOTES.md estimate (~437,387,800) corrected: actual is 437,387,843 (off by 43).
+- Gap inserted into `slot_gaps` table.
+- **Correction (2026-08-08):** The ~437387800 estimate was slightly off — the
+  actual end slot (derived from `account_updates` data and now recorded in
+  `slot_gaps`) is **437387843**, off by 43 slots. The derivation used the
+  first `account_updates` row after the gap visible in the stream, rather
+  than a NOTES.md margin note.
+
+### Web dashboard
+- Live at http://34.44.9.74:8080/ — Kamino-themed (deep navy, cyan, 海 kanji logo).
+- Panels: Market Overview (reserves, obligations, median health, at-risk count),
+  Risk Radar (15 obligations by health factor), Liquidity Depth (top reserves by
+  available liquidity with token symbol detection), System Health (slot, checkpoint,
+  lag, gaps).
+- Query proxy: Node.js container on the VM, forwards POST body to ClickHouse Cloud
+  TLS endpoint, returns JSON. Also serves the static HTML at GET /.
+- Data corrections applied: median over mean (outlier-resistant), DISTINCT dedup,
+  health factor / 1e6 scale, u64::MAX sentinel filtered from all aggregates.
+- Firewall: port 8080 open 0.0.0.0/0 — still too wide, but read-only aggregate data
+  only.
+
+### Senior-engineer takeaway
+The architectural decision that makes everything else safe: raw account data in
+`account_updates` and decoded snapshots in separate tables. Decode is lossy; raw
+data is truth. Without it, every decode bug means lost data you can't recover.
+
+The engineering instinct — "make wrongness visible" — runs through every design
+decision: `AccountKind` enum over `Option<&str>`, discriminator derivation over
+transcription, `From` over `TryFrom` for classification, budget in slots not seconds.
+
+Growth-stage problems: no tests anywhere, `main.rs` at 900+ lines, gap detection
+blind spot on the success path, deploy docs drift from actual commands.
