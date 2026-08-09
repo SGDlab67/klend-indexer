@@ -49,6 +49,19 @@ const QUERIES = {
     SELECT
       (SELECT max(slot) FROM klend.account_updates) AS latest_slot,
       (SELECT last_slot FROM klend.ingest_checkpoint FINAL WHERE stream='klend') AS checkpoint,
+      -- Seconds since the last row landed. THE liveness signal, and the only one
+      -- on this page that can fall over.
+      --
+      -- latest_slot and checkpoint advance together and freeze together, so the
+      -- difference between them is ~0 whether the pipeline is healthy or wedged.
+      -- The status dot was driven off that difference and therefore stayed green
+      -- through a stall — verified 2026-08-09 by pausing the indexer and watching
+      -- the page keep reporting "live" over frozen data.
+      --
+      -- Same expression the freshness watchdog acts on, so the page and the guard
+      -- cannot disagree about whether ingest is alive.
+      (SELECT toInt64(toUnixTimestamp(now64(3)) - toUnixTimestamp(max(ingested_at)))
+       FROM klend.account_updates) AS ingest_age_s,
       (SELECT count() FROM klend.slot_gaps FINAL WHERE filled=0) AS unfilled_gaps,
       (SELECT count() FROM klend.account_updates) AS total_rows,
       (SELECT count() FROM klend.obligation_snapshots FINAL) AS snap_rows,

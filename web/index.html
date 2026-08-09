@@ -882,17 +882,32 @@ async function loadReserves() {
 async function loadSystem() {
   const { rows } = await api('system').catch(() => ({rows:[]}));
   if (!rows[0]) return;
-  const [slot, cp, gaps, rows_, snaps, resMax] = rows[0];
+  const [slot, cp, age, gaps, rows_, snaps, resMax] = rows[0];
   const lag = Number(slot) - Number(cp);
+  const ageS = Number(age);
 
+  // Driven by ingest AGE, not by slot-minus-checkpoint. Those two advance
+  // together and freeze together, so their difference stays ~0 through a wedge
+  // and the dot stayed green while nothing was being written.
+  //
+  // Thresholds come from the measured distribution (2026-08-09, 52,100 samples):
+  // p99.9 = 58s and the longest observed silence = 90s, so 120s is above every
+  // normal quiet span. 900s is the watchdog's own threshold, so red means the
+  // guard should already be restarting the indexer.
   const dot = document.getElementById('statusDot');
   const lagText = document.getElementById('lagText');
-  if (lag < 50) { dot.className='status-dot'; lagText.textContent='live'; }
-  else if (lag < 500) { dot.className='status-dot warn'; lagText.textContent=lag+' slots behind'; }
-  else { dot.className='status-dot down'; lagText.textContent=lag+' slots behind'; }
+  const ageText = ageS < 90 ? ageS+'s ago' : Math.round(ageS/60)+'m ago';
+  if (ageS < 120)      { dot.className='status-dot';      lagText.textContent='live · wrote '+ageText; }
+  else if (ageS < 900) { dot.className='status-dot warn';  lagText.textContent='no writes for '+ageText; }
+  else                 { dot.className='status-dot down';  lagText.textContent='STALLED · no writes for '+ageText; }
   document.getElementById('slotText').textContent = '· slot '+fmt(Number(slot));
 
   document.getElementById('sysHealth').innerHTML = `
+    <div>
+      <div class="card-label">Last Write</div>
+      <div class="card-value" style="font-size:20px;color:${ageS<120?'var(--green)':ageS<900?'var(--amber)':'var(--red,#f66)'}">${ageText}</div>
+      <div class="card-sub">${ageS<120 ? 'ingest is live' : 'ingest has stalled — watchdog restarts at 15m'}</div>
+    </div>
     <div>
       <div class="card-label">Current Slot</div>
       <div class="card-value" style="font-size:20px">${fmt(Number(slot))}</div>
