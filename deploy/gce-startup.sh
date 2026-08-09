@@ -57,12 +57,37 @@ sm() {
 GRPC_TOKEN_V="$(sm alchemy-grpc-token)"
 CH_PASSWORD_V="$(sm klend-clickhouse-cloud-password)"
 
+# ⚠️ Rendered value, NOT a literal. The repo is public, so the live endpoint is a
+# placeholder here and is substituted before this script is attached as
+# `startup-script` metadata — same rule as watchdog.sh, ch-remote.sh and
+# install-dashboard-export.sh.
+#
+# The guard below is load-bearing and was added 2026-08-09 after an audit found
+# this file carrying the raw placeholder. Attaching it unrendered would have made
+# the next REBOOT do `docker rm -f klend-indexer` and relaunch it pointing at a
+# hostname that does not resolve — taking the pipeline down and keeping it down,
+# on the one machine whose downtime costs unrecoverable history.
+#
+# Aborting here is fail-SAFE, and the ordering is why: nothing destructive has run
+# yet, so the existing container is untouched and Docker's `--restart always`
+# brings it back with the env already captured in its config. A broken relaunch is
+# the only outcome worth preventing; no relaunch is survivable.
+CH_URL="__CH_URL__"
+case "$CH_URL" in
+    *__*|*YOUR_INSTANCE*)
+        echo "FATAL: CLICKHOUSE_URL placeholder not substituted ('${CH_URL}')." >&2
+        echo "Refusing to relaunch the indexer against an unresolvable host." >&2
+        echo "The running container is untouched; --restart always still covers it." >&2
+        exit 1
+        ;;
+esac
+
 ENVF=/run/klend-indexer.env   # tmpfs on COS: never persisted to disk
 umask 077
 {
     echo "GRPC_URL=https://solana-mainnet.g.alchemy.com"
     echo "GRPC_TOKEN=${GRPC_TOKEN_V}"
-    echo "CLICKHOUSE_URL=YOUR_INSTANCE.REGION.gcp.clickhouse.cloud:9440"
+    echo "CLICKHOUSE_URL=${CH_URL}"
     echo "CLICKHOUSE_SECURE=1"
     echo "CLICKHOUSE_USER=default"
     echo "CLICKHOUSE_DATABASE=klend"
