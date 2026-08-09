@@ -180,6 +180,30 @@ pub struct ObligationSnapshotRow {
     pub flags: u8,
     pub elevation_group: u8,
     pub referrer: Bytes,
+
+    // ── Position size (schema/008) ──────────────────────────────────────────
+    // Kamino `Fraction` values: U68F60 fixed point, so the stored integer is the
+    // real value × 2^60. Kept raw and undivided — see 008 for why converting at
+    // write time would bake a scale assumption into unrecoverable history.
+    //
+    // Rows written before 008 read back as 0, which is indistinguishable from a
+    // genuinely empty position; queries must bound by slot or filter > 0.
+    /// Total deposit market value (U68F60).
+    pub deposited_value_sf: u128,
+    /// Total borrow market value (U68F60).
+    pub borrowed_value_sf: u128,
+    /// Risk-adjusted debt including borrow factors (U68F60). This is the
+    /// denominator `health_factor_bps` was derived from, stored so the derived
+    /// number can be audited against its own inputs.
+    pub borrow_factor_adjusted_debt_sf: u128,
+    /// Max borrow value at weighted LTV (U68F60). Borrowing headroom is this
+    /// minus `borrowed_value_sf`.
+    pub allowed_borrow_value_sf: u128,
+    /// Borrow value at the liquidation threshold (U68F60).
+    pub unhealthy_borrow_value_sf: u128,
+    /// Worst liquidation LTV across deposit reserves, plain basis points
+    /// (8500 = 85%). NOT a Fraction — no 2^60 divide.
+    pub lowest_deposit_liquidation_ltv: u64,
 }
 
 /// Decoded Reserve snapshot — one row per Reserve account update.
@@ -215,7 +239,9 @@ pub struct ReserveSnapshotRow {
 
 pub const INSERT_SNAPSHOT_SQL: &str = "INSERT INTO obligation_snapshots \
     (slot, write_version, pubkey, owner, lending_market, \
-     num_deposits, num_borrows, health_factor_bps, flags, elevation_group, referrer) \
+     num_deposits, num_borrows, health_factor_bps, flags, elevation_group, referrer, \
+     deposited_value_sf, borrowed_value_sf, borrow_factor_adjusted_debt_sf, \
+     allowed_borrow_value_sf, unhealthy_borrow_value_sf, lowest_deposit_liquidation_ltv) \
      FORMAT Native";
 
 pub const INSERT_RESERVE_SNAPSHOT_SQL: &str = "INSERT INTO reserve_snapshots \

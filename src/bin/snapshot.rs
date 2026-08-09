@@ -458,6 +458,12 @@ async fn fetch_and_write(
                     flags: d.flags,
                     elevation_group: d.elevation_group,
                     referrer: Bytes(d.referrer.to_vec()),
+                    deposited_value_sf: d.deposited_value_sf,
+                    borrowed_value_sf: d.borrowed_assets_market_value_sf,
+                    borrow_factor_adjusted_debt_sf: d.borrow_factor_adjusted_debt_value_sf,
+                    allowed_borrow_value_sf: d.allowed_borrow_value_sf,
+                    unhealthy_borrow_value_sf: d.unhealthy_borrow_value_sf,
+                    lowest_deposit_liquidation_ltv: d.lowest_deposit_liquidation_ltv,
                 }),
                 other => {
                     decode_failures += 1;

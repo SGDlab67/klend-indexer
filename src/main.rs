@@ -646,6 +646,17 @@ async fn main() -> Result<()> {
                                                 flags: decoded.flags,
                                                 elevation_group: decoded.elevation_group,
                                                 referrer: Bytes(decoded.referrer.to_vec()),
+                                                deposited_value_sf: decoded.deposited_value_sf,
+                                                borrowed_value_sf: decoded
+                                                    .borrowed_assets_market_value_sf,
+                                                borrow_factor_adjusted_debt_sf: decoded
+                                                    .borrow_factor_adjusted_debt_value_sf,
+                                                allowed_borrow_value_sf: decoded
+                                                    .allowed_borrow_value_sf,
+                                                unhealthy_borrow_value_sf: decoded
+                                                    .unhealthy_borrow_value_sf,
+                                                lowest_deposit_liquidation_ltv: decoded
+                                                    .lowest_deposit_liquidation_ltv,
                                             });
                                         }
                                         Some(Err(e)) => {
