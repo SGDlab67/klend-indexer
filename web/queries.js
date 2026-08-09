@@ -45,6 +45,36 @@ const QUERIES = {
     ORDER BY avail DESC LIMIT 15
     FORMAT TSVRaw`,
 
+  // Per-minute throughput for the last hour, split by account type.
+  //
+  // This is what drives the live flow animation, and driving it from real
+  // measurements rather than from a fixed CSS duration is the whole point: a
+  // pipeline diagram that keeps flowing while nothing is being written is the
+  // same lie as a status dot computed from two numbers that freeze together.
+  // When these rows stop arriving, the animation has to stop with them.
+  //
+  // No FINAL here, deliberately. This counts WORK DONE — writes that happened,
+  // replayed duplicates included — not distinct accounts, and collapsing
+  // duplicates would under-report exactly the reconnect bursts most worth
+  // seeing. It also keeps the query off the merge path on a 966 MB box.
+  //
+  // `ingested_at` is not in the sort key, so this is a scan. Cheap at 500K rows
+  // and it reads three narrow columns, never the payload; revisit if the table
+  // grows a couple of orders of magnitude.
+  flow: `
+    SELECT
+      toUnixTimestamp(toStartOfMinute(ingested_at)) AS minute,
+      count()                         AS writes,
+      countIf(kind = 'Obligation')    AS obligations,
+      countIf(kind = 'Reserve')       AS reserves,
+      countIf(kind = 'LendingMarket') AS markets,
+      sum(data_len)                   AS bytes
+    FROM klend.account_updates
+    WHERE ingested_at >= now() - INTERVAL 60 MINUTE
+    GROUP BY minute
+    ORDER BY minute
+    FORMAT TSVRaw`,
+
   system: `
     SELECT
       (SELECT max(slot) FROM klend.account_updates) AS latest_slot,

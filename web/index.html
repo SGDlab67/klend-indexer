@@ -40,6 +40,85 @@
       radial-gradient(ellipse 80% 60% at 15% 10%, rgba(0,229,255,0.04) 0%, transparent 60%),
       radial-gradient(ellipse 60% 50% at 85% 90%, rgba(0,140,200,0.03) 0%, transparent 60%);
   }
+  /* ── Live data flow ─────────────────────────────────────────────────────
+     The dots are paced from measured throughput at render time (see
+     renderFlow), so every timing here is a default that JS overrides. The
+     stalled state is not decoration: it is the visual half of the same rule
+     the status dot follows — nothing on this page may imply liveness it
+     cannot demonstrate. */
+  .flow-card{padding:20px 18px 16px}
+  .flow-status{
+    display:flex; align-items:center; gap:8px; font-family:var(--font-mono);
+    font-size:11.5px; letter-spacing:.02em; color:var(--text); margin-bottom:16px;
+  }
+  .flow-status b{color:var(--white); font-weight:500}
+  .flow-chain{display:flex; align-items:stretch; flex-wrap:wrap; gap:6px 0}
+  .flow-node{
+    flex:1 1 150px; min-width:132px; padding:12px 12px 11px; border-radius:10px;
+    background:rgba(0,229,255,0.025); border:1px solid var(--border);
+    transition:border-color .3s ease, background .3s ease;
+  }
+  .flow-node-label{
+    font-size:9px; letter-spacing:.15em; text-transform:uppercase;
+    color:var(--cyan-dim); margin-bottom:7px; white-space:nowrap;
+  }
+  .flow-node-value{
+    font-family:var(--font-mono); font-size:16px; color:var(--white);
+    letter-spacing:-.01em; line-height:1.2;
+  }
+  .flow-node-sub{font-size:10.5px; color:var(--text-dim); margin-top:4px; line-height:1.4}
+  /* Type mix inside the decoder node: share bars, not numbers, because the
+     question it answers is "what is this stream made of", not "how many". */
+  .flow-mix{margin-top:7px; display:flex; flex-direction:column; gap:3px}
+  .flow-mix-row{display:flex; align-items:center; gap:6px; font-size:9.5px; color:var(--text-dim)}
+  .flow-mix-bar{flex:1; height:3px; border-radius:2px; background:rgba(255,255,255,0.06); overflow:hidden}
+  .flow-mix-fill{display:block; height:100%; border-radius:2px; background:var(--cyan); opacity:.75}
+  .flow-mix-n{font-family:var(--font-mono); min-width:30px; text-align:right; color:var(--text)}
+  /* Connector. `left` is animated rather than `transform` so the travel spans
+     the flex-sized gap without JS measuring it. A dozen dots is nothing. */
+  .flow-link{
+    flex:0 1 44px; min-width:26px; align-self:center; height:2px; margin:0 3px;
+    position:relative; border-radius:2px;
+    background:linear-gradient(90deg, transparent, var(--border-hover), transparent);
+  }
+  .flow-dot{
+    position:absolute; top:50%; margin-top:-3px; width:6px; height:6px; border-radius:50%;
+    background:var(--cyan); box-shadow:0 0 8px var(--cyan), 0 0 2px #fff;
+    animation:flowmove var(--dur,2.4s) linear infinite; animation-delay:var(--delay,0s);
+  }
+  @keyframes flowmove{
+    0%{left:-3px; opacity:0}
+    15%{opacity:1}
+    85%{opacity:1}
+    100%{left:calc(100% - 3px); opacity:0}
+  }
+  .flow-chain.stalled .flow-node{border-color:rgba(255,77,106,0.25); background:rgba(255,77,106,0.03)}
+  .flow-chain.stalled .flow-dot{animation-play-state:paused; opacity:.12; box-shadow:none}
+  .flow-chain.stalled .flow-link{
+    background:repeating-linear-gradient(90deg, rgba(255,77,106,.5) 0 3px, transparent 3px 7px);
+  }
+  .flow-spark-wrap{margin-top:18px}
+  .flow-spark-head{
+    display:flex; justify-content:space-between; align-items:baseline;
+    font-size:9px; letter-spacing:.15em; text-transform:uppercase;
+    color:var(--cyan-dim); margin-bottom:6px;
+  }
+  .flow-peak{font-family:var(--font-mono); letter-spacing:0; text-transform:none; color:var(--text)}
+  .flow-spark{width:100%; height:72px; display:block}
+  .flow-spark-axis{
+    display:flex; justify-content:space-between; font-size:9.5px;
+    color:var(--text-dim); margin-top:4px;
+  }
+  /* Below ~640px the chain stacks; the connectors would become meaningless
+     1-pixel stubs between full-width rows, so they are removed rather than
+     left as decoration that no longer describes anything. */
+  @media (max-width:640px){
+    .flow-link{display:none}
+    .flow-node{flex:1 1 100%}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .flow-dot{animation:none; opacity:.8; left:calc(50% - 3px)}
+  }
   .waves{
     position:fixed; bottom:0; left:0; right:0; height:180px;
     opacity:0.05; pointer-events:none; z-index:0;
@@ -294,6 +373,7 @@
 
   <nav>
     <div class="nav-inner">
+      <a href="#flow" data-nav>Data Flow</a>
       <a href="#overview" data-nav>Market</a>
       <a href="#risk" data-nav>Risk Radar</a>
       <a href="#liquidity" data-nav>Liquidity</a>
@@ -303,6 +383,33 @@
       <button class="nav-help" onclick="openTopic('reading')">Reading this page →</button>
     </div>
   </nav>
+
+  <!-- ── Live Data Flow ── -->
+  <section class="section" id="flow">
+    <div class="section-head">
+      <div class="section-title">Live Data Flow</div>
+      <button class="info-btn" onclick="openTopic('flowviz')" title="What this animation is driven by">i</button>
+    </div>
+    <p class="section-intro">
+      The four stages an account write passes through, moving at the rate the pipeline
+      is actually running. The dots are paced by measured throughput, not by a fixed
+      animation — <strong>when ingest stops, this stops.</strong> A diagram that keeps
+      flowing while nothing is being written would be the same lie as a green light
+      wired to nothing.
+    </p>
+    <div class="card flow-card">
+      <div class="flow-status" id="flowStatus"></div>
+      <div class="flow-chain" id="flowChain"></div>
+      <div class="flow-spark-wrap">
+        <div class="flow-spark-head">
+          <span>account writes per minute</span>
+          <span id="flowPeak" class="flow-peak"></span>
+        </div>
+        <svg class="flow-spark" id="flowSpark" viewBox="0 0 600 72" preserveAspectRatio="none" aria-hidden="true"></svg>
+        <div class="flow-spark-axis"><span>60 min ago</span><span>now</span></div>
+      </div>
+    </div>
+  </section>
 
   <!-- ── Market Overview ── -->
   <section class="section" id="overview">
@@ -475,6 +582,39 @@ function generatedAgo() {
 // info button, a nav link, or a cross-reference in another topic without the
 // text existing in three places.
 const TOPICS = {
+  flowviz: {
+    eyebrow: 'Operations',
+    title: 'What the animation is actually measuring',
+    html: `
+      <h4>It is paced by data, not by CSS</h4>
+      <p>Dot count and dot speed are both computed from <strong>account writes per minute</strong>, averaged
+      over the last ten complete minutes. A busy stream gets more dots moving faster; a quiet one gets a
+      slow trickle. Nothing here runs on a fixed timer.</p>
+      <blockquote>The newest minute is deliberately excluded from that average. It is a partial bucket and
+      always reads low, so including it would make a healthy pipeline appear to be dying every time the
+      exporter happens to run mid-minute.</blockquote>
+      <h4>When ingest stops, this stops</h4>
+      <p>The whole chain turns red and the dots freeze once nothing has been written for two minutes. That
+      threshold is not a guess: over 52,100 measured ingest seconds the longest normal silence was
+      <strong>90 seconds</strong>, so anything past two minutes is outside observed behaviour.</p>
+      <p>This is the same freshness number the status dot uses and the same one the server-side watchdog
+      acts on before restarting the indexer. One measurement, three consumers, so the animation cannot
+      claim the pipeline is alive while the guard is busy restarting it.</p>
+      <h4>Why that rule matters here</h4>
+      <p>A flow diagram is the easiest thing on a dashboard to fake. Left on a CSS loop it would animate
+      just as convincingly over a dead pipeline as a live one — which is exactly the failure this project
+      already paid for once, when a container reported healthy for 8.4 hours while writing nothing.</p>
+      <h4>The type mix</h4>
+      <p>The decoder stage shows what the stream is <em>made of</em> — the share of Obligation, Reserve and
+      LendingMarket accounts over the same ten-minute window. Reserves usually dominate: they are rewritten
+      on essentially every interaction, which is why trimming their payload was the single largest
+      bandwidth saving in the project.</p>
+      <h4>The bars below</h4>
+      <p>Writes per minute for the last hour, one bar per minute. Bars rather than a line, because the
+      series is a count per discrete bucket and a line would imply interpolation between minutes that does
+      not exist. Gaps and bursts are both real: a burst is usually a reconnect replaying its way back to
+      the tip.</p>`,
+  },
   reading: {
     eyebrow: 'Orientation',
     title: 'Reading this page',
@@ -786,7 +926,7 @@ async function refreshAll() {
     document.getElementById('riskTs').textContent = ts ? ts + ' (refresh failed)' : 'refresh failed';
     return;
   }
-  await Promise.allSettled([loadOverview(), loadRisk(), loadReserves(), loadSystem()]);
+  await Promise.allSettled([loadOverview(), loadRisk(), loadReserves(), loadSystem(), loadFlow()]);
   document.getElementById('footTs').textContent = generatedAgo();
 
   // Re-apply the deep link once, after the first render. The browser honours
@@ -879,6 +1019,111 @@ async function loadReserves() {
   document.getElementById('reserveTs').textContent = generatedAgo();
 }
 
+// ── Live data flow ──────────────────────────────────────────────────────────
+// Renders the four-stage chain and paces its animation from measured
+// throughput. `age` (seconds since the newest row landed) is the authority on
+// whether anything moves at all: it is the same number the freshness watchdog
+// acts on and the same one the status dot uses, so the animation, the dot and
+// the guard cannot disagree about whether ingest is alive.
+async function loadFlow() {
+  const { rows } = await api('flow').catch(() => ({ rows: [] }));
+  const sys = (await api('system').catch(() => ({ rows: [] }))).rows[0];
+  if (!sys) return;
+
+  const [slot, , age, , totalRows, snaps] = sys;
+  const ageS = Number(age);
+  const stalled = ageS >= 120;
+
+  // Ignore the newest bucket when rating throughput: it is a partial minute and
+  // always reads low, which would make a healthy pipeline look like it is
+  // dying every time the exporter runs mid-minute.
+  const series = rows.map(r => ({
+    t: Number(r[0]), writes: Number(r[1]),
+    obl: Number(r[2]), res: Number(r[3]), mkt: Number(r[4]),
+  }));
+  const rated = series.slice(0, -1);
+  const recent = rated.slice(-10);
+  const perMin = recent.length
+    ? Math.round(recent.reduce((a, b) => a + b.writes, 0) / recent.length)
+    : 0;
+
+  const mix = recent.reduce((a, b) => ({
+    obl: a.obl + b.obl, res: a.res + b.res, mkt: a.mkt + b.mkt,
+  }), { obl: 0, res: 0, mkt: 0 });
+  const mixTotal = mix.obl + mix.res + mix.mkt || 1;
+
+  // More throughput means more dots AND faster dots. Both are clamped: below the
+  // floor a quiet-but-healthy stream would look dead, above the ceiling a
+  // reconnect burst would strobe.
+  const dots = Math.max(1, Math.min(5, Math.round(perMin / 40) || 1));
+  const dur = Math.max(0.55, Math.min(3.2, 3.2 - perMin / 120)).toFixed(2);
+
+  const link = () => {
+    let d = '';
+    for (let i = 0; i < dots; i++) {
+      d += `<span class="flow-dot" style="--dur:${dur}s;--delay:${(i * dur / dots).toFixed(2)}s"></span>`;
+    }
+    return `<div class="flow-link">${d}</div>`;
+  };
+  const node = (label, value, sub, extra = '') => `
+    <div class="flow-node">
+      <div class="flow-node-label">${label}</div>
+      <div class="flow-node-value">${value}</div>
+      <div class="flow-node-sub">${sub}</div>${extra}
+    </div>`;
+
+  const mixRow = (name, n) => `
+    <div class="flow-mix-row">
+      <span style="min-width:34px">${name}</span>
+      <span class="flow-mix-bar"><span class="flow-mix-fill" style="width:${(n / mixTotal * 100).toFixed(1)}%"></span></span>
+      <span class="flow-mix-n">${Math.round(n / mixTotal * 100)}%</span>
+    </div>`;
+
+  document.getElementById('flowChain').className = 'flow-chain' + (stalled ? ' stalled' : '');
+  document.getElementById('flowChain').innerHTML =
+    node('1 · Solana', fmt(Number(slot)), 'chain tip, CONFIRMED') +
+    link() +
+    node('2 · Yellowstone', perMin ? perMin + '/min' : '—', 'account writes matching 3 discriminator filters') +
+    link() +
+    node('3 · Rust decode', fmt(Number(snaps)), 'decoded rows', `
+      <div class="flow-mix">
+        ${mixRow('Obl', mix.obl)}${mixRow('Rsrv', mix.res)}${mixRow('Mkt', mix.mkt)}
+      </div>`) +
+    link() +
+    node('4 · ClickHouse', fmt(Number(totalRows)), 'raw payloads, batched insert');
+
+  const statusEl = document.getElementById('flowStatus');
+  if (stalled) {
+    statusEl.innerHTML = `<span class="status-dot down"></span><b>STALLED</b> · nothing written for ${
+      ageS < 90 ? ageS + 's' : Math.round(ageS / 60) + 'm'} · flow halted because ingest halted`;
+  } else {
+    statusEl.innerHTML = `<span class="status-dot"></span><b>${perMin}</b> writes/min sustained · last row landed <b>${ageS}s</b> ago`;
+  }
+
+  // Sparkline. Bars, not a line: the series is a count per discrete minute, and
+  // a line would imply interpolation between buckets that does not exist.
+  const peak = Math.max(1, ...series.map(s => s.writes));
+  document.getElementById('flowPeak').textContent = series.length ? `peak ${peak}/min` : '';
+
+  // Bars are placed by WHEN they happened, across a fixed 60-slot window, not
+  // packed left-to-right in arrival order. Packing them stretched whatever
+  // buckets existed across an axis labelled "60 min ago → now", so during a
+  // stall the chart quietly rescaled instead of showing the hole. A minute with
+  // no writes has to render as empty space at the position it occupies —
+  // otherwise the one chart that should make an outage obvious hides it.
+  const SLOTS = 60;
+  const nowMin = Math.floor(Date.now() / 60000);
+  const bw = 600 / SLOTS;
+  document.getElementById('flowSpark').innerHTML = series.map((s) => {
+    const offset = SLOTS - 1 - (nowMin - Math.floor(s.t / 60));
+    if (offset < 0 || offset >= SLOTS) return '';
+    const h = Math.max(1, (s.writes / peak) * 68);
+    const newest = offset === SLOTS - 1;
+    return `<rect x="${(offset * bw).toFixed(2)}" y="${(72 - h).toFixed(2)}" width="${(bw - 1).toFixed(2)}" height="${h.toFixed(2)}" rx="0.8"
+      fill="${stalled ? 'rgba(255,77,106,.35)' : newest ? 'var(--cyan-dim)' : 'var(--cyan)'}" opacity="${newest ? .6 : .5}"></rect>`;
+  }).join('');
+}
+
 async function loadSystem() {
   const { rows } = await api('system').catch(() => ({rows:[]}));
   if (!rows[0]) return;
@@ -896,10 +1141,14 @@ async function loadSystem() {
   // guard should already be restarting the indexer.
   const dot = document.getElementById('statusDot');
   const lagText = document.getElementById('lagText');
-  const ageText = ageS < 90 ? ageS+'s ago' : Math.round(ageS/60)+'m ago';
-  if (ageS < 120)      { dot.className='status-dot';      lagText.textContent='live · wrote '+ageText; }
-  else if (ageS < 900) { dot.className='status-dot warn';  lagText.textContent='no writes for '+ageText; }
-  else                 { dot.className='status-dot down';  lagText.textContent='STALLED · no writes for '+ageText; }
+  // Bare duration, no "ago": the healthy and stalled sentences need it in
+  // different grammatical positions, and baking the suffix in produced
+  // "no writes for 22m ago".
+  const ageAbbr = ageS < 90 ? ageS+'s' : Math.round(ageS/60)+'m';
+  const ageText = ageAbbr + ' ago';
+  if (ageS < 120)      { dot.className='status-dot';      lagText.textContent='live · wrote '+ageAbbr+' ago'; }
+  else if (ageS < 900) { dot.className='status-dot warn';  lagText.textContent='no writes for '+ageAbbr; }
+  else                 { dot.className='status-dot down';  lagText.textContent='STALLED · no writes for '+ageAbbr; }
   document.getElementById('slotText').textContent = '· slot '+fmt(Number(slot));
 
   document.getElementById('sysHealth').innerHTML = `
