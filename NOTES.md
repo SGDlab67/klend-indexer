@@ -1362,3 +1362,192 @@ rather than object storage.
 - The cold path has never touched production data.
 - 8 local commits unpushed. Still a deliberate decision, not an oversight: the
   Day 7 entry describes the security incident in detail.
+
+## Day 8 (cont.) — the watchdog that never ran, and the ClickHouse cost cliff (2026-08-09)
+
+Started as "pick a low-risk task"; the audit that was supposed to justify the
+choice turned up two things bigger than the task.
+
+### 1. The freshness watchdog has never run
+
+Audited the live VM. No `/var/lib/klend/watchdog.sh`. No `klend-watchdog.service`.
+Only `klend-dashboard.service`/`.timer` (Aug 8) exist.
+
+The guard written for the 2026-08-05 freeze — the incident that cost 8h40m of
+unrecoverable history while the container reported `Up` at CPU 0% — has never been
+running. `--restart always` structurally cannot catch that failure: Docker never
+considered the container unhealthy.
+
+**Root cause.** `deploy/gce-startup.sh` contains the install logic (lines
+~105-131), reading the script from the `watchdog-script` instance metadata
+attribute. The instance carries `watchdog-script` and **no `startup-script` key**,
+so the file that consumes it is never executed. The last
+`google-startup-scripts` run (Aug 5) was the default no-op.
+
+Second consequence, worth its own line: the redeploy path documented in
+`DEPLOY.md`, `sudo google_metadata_script_runner startup`, currently does nothing.
+Phase 3 §0 called that command "the documented redeploy path and probably right";
+it is attached to nothing.
+
+`deploy/install-watchdog.sh` now installs it directly rather than depending on
+that wiring.
+
+### 2. `gce-startup.sh` would have broken production if attached
+
+It carried `CLICKHOUSE_URL=YOUR_INSTANCE.REGION.gcp.clickhouse.cloud:9440` as a
+literal. Attaching it as `startup-script` — the obvious "fix" for §1 — would make
+the next reboot `docker rm -f klend-indexer` and relaunch it against a hostname
+that does not resolve, taking the pipeline down and keeping it down.
+
+Now takes a rendered `__CH_URL__` and aborts if the placeholder survives. Aborting
+is fail-SAFE and the ordering is why: nothing destructive has run at that point,
+so the existing container is untouched and `--restart always` brings it back with
+the env already captured in its config.
+
+**Deliberately still not attached.** Reboot survival already works through the
+restart policy — verified: secrets live in the container's `Config.Env`, no mounts
+— and the watchdog installer does not depend on the startup script. Attaching it
+is a separate, verified step, not a side effect of today.
+
+Note this also diverges from `SECRETS.md`: the design says Secret Manager → tmpfs
+at boot, but the values are in the container config on disk, because the container
+was launched by hand rather than by the script.
+
+### 3. STALE_THRESHOLD is now measured, not assumed
+
+Before arming something that can restart production, measured what "normal" is.
+Over **52,100** distinct ingest seconds across four days of steady state:
+
+| p50 | p99 | p99.9 | max |
+|---|---|---|---|
+| 4s | 34s | 58s | **90s** |
+
+The longest ingest silence ever observed is 90 seconds. `STALE_THRESHOLD=900s`
+is ~10× that. Kept, now with evidence.
+
+Same asymmetry as `RESUME_TOLERANCE_SLOTS`: firing late costs detection latency,
+firing early restarts a **healthy** indexer and manufactures the seam the watchdog
+exists to prevent. Against an 8.4h incident, anything under ~20 min is a rounding
+error, so spend the slack on false-positive margin.
+
+Known limitation recorded in the script: it cannot distinguish "indexer stalled"
+from "Solana halted". A long chain halt would restart the indexer repeatedly
+(bounded by `MIN_SETTLE`). Harmless — each restart resumes from checkpoint — but
+noisy. The real fix is a heartbeat carrying `tip_slot`, which the indexer does not
+write.
+
+### 4. Watchdog now runs as `klend_ro`
+
+It performs exactly one `max(ingested_at)` query and was holding the **admin**
+password to do it. Verified on the VM: the SELECT succeeds and an INSERT is
+refused with `klend_ro: Not enough privileges`. Same reasoning that moved the
+dashboard off admin on Day 7; missed then only because the watchdog was never
+installed.
+
+The freshness query also dropped its string literal —
+`toUnixTimestamp(now64(3)) - toUnixTimestamp(max(ingested_at))` — because the
+script travels workstation → metadata → curl → file → bash, and the Day 5
+blank-password bug came from exactly that class of pipeline damage.
+
+### 5. Tested dynamically against a real stall
+
+`docker pause` reproduces the Aug 5 shape precisely: process alive, container not
+"exited", nothing being written. Verified first on a throwaway container that
+`docker restart` recovers a paused container on Docker 27.4.1 (paused → running),
+so the test could not strand the indexer.
+
+```
+23:07:18  docker pause
+23:10:19  watchdog: fresh (190s)
+23:15:19  watchdog: fresh (490s)
+23:20:19  watchdog: fresh (790s)
+23:25:20  watchdog: STALE 1091s > 900s; restarting klend-indexer
+23:25:21  watchdog: restarted
+          indexer: resuming from checkpoint slot=438287802 (inclusive)
+```
+
+Staleness tracked the prediction to the second at every check.
+
+**Zero data loss, measured rather than assumed.** Largest slot jump across the
+whole paused window: **117 slots** (~47s, an ordinary quiet span) over 246 slots
+carrying data. An 18-minute hole would have shown as ~2,700. `slot_gaps` stayed
+at 1 row — no false gap recorded. Ingest age back to 1s.
+
+A background poller held a hard auto-unpause backstop at 25 minutes, so a dropped
+session could not leave the container paused past the ~6000-slot replay window and
+turn a test into real unrecoverable loss. It was never needed.
+
+**Honest limit: this did not exercise the Day 8 startup gap detector.** The
+running image is `created=2026-08-08T02:00:12Z`, which predates today's commit, so
+that code is not deployed. The test validated the watchdog, the resume path, and
+the replay window — not the detector.
+
+### 6. The dashboard could not have shown any of this
+
+Found while the indexer was paused: the page kept reporting **live** over frozen
+data, and could not have done otherwise. The status dot was
+`max(slot) - checkpoint`, and those two advance together and freeze together, so
+their difference is ~0 whether the pipeline is healthy or wedged.
+
+The static export made it worse. `generated_at` refreshes every 60s because the
+exporter queries ClickHouse independently of the indexer, so the page showed a
+25-second-old timestamp above a slot number that had not moved in four minutes.
+Fresh clock, stale data — the same "looks live while going stale" shape the
+`775ee31` message called out for the uploader, one layer down.
+
+Fixed by adding `ingest_age_s` to the system query and driving the dot and a new
+Last Write tile from it — the same expression the watchdog acts on, so the page
+and the guard cannot disagree. Thresholds from the measured distribution: 120s
+(above the observed 90s max) and 900s (the watchdog's own).
+
+**Committed, NOT deployed.** `queries.js` ships inside the export container image
+while `index.html` uploads straight to the bucket, so the two must ship together
+or every field after `checkpoint` shifts by one.
+
+### 7. ClickHouse is burning $18.02/day, and credits expire Aug 19
+
+Pulled from the billing API rather than the dashboard summary.
+
+| Date | Cost |
+|---|---|
+| Jul 21 – Aug 4 | **$0.00** (15 days) |
+| Aug 5 | $12.15 |
+| Aug 6 / 7 / 8 | $18.02 each |
+
+100% compute. Storage $0, data transfer $0. The zero-days are the pre-deploy
+period when the service idled; billing began the day the indexer went 24/7.
+
+**Why:** `numReplicas: 2`, `minReplicaMemoryGb: 12`, `maxReplicaMemoryGb: 12` —
+autoscaling pinned, so it can never scale down. And `idleScaling: true` with a
+15-minute timeout that **can never trigger**, because `FLUSH_INTERVAL_SECS = 2`
+means a write every two seconds. The one mechanism that would make this cheap is
+structurally unreachable.
+
+The generalisable part: *a continuous low-volume writer defeats every idle-based
+pricing model — the cost is set by how often you write, not how much.* The flush
+cadence was tuned for data safety, and that is exactly what makes an idle-billed
+service the wrong host.
+
+**The cliff:** $216.47 remaining ÷ $18.02/day = 12 days. Credits expire Aug 19
+regardless, leaving ~$36 stranded. From Aug 20 it is a credit card at ~$548/month.
+Demo day (Aug 17) is inside the window; the cliff lands three days later, at the
+start of the Aug 18 – Sept 12 window §11e says holds Phase 1's hardest work.
+
+Alchemy, for contrast: 15,540 of 66.7M CUs — **0.02%**. The metered upstream
+everyone budgeted for is not the cost. The managed database is.
+
+**Decision: export to Parquet/GCS before Aug 19 and let the service lapse.** Full
+reasoning in the vault note. This promotes the Day 8 cold path from portfolio
+piece to exit strategy, and makes "never run against production" the blocking item
+with a hard date. Consequence: every day of ingest between now and Aug 19 becomes
+permanent in the archive, which is what raised the watchdog from hygiene to the
+thing protecting the final accumulation window.
+
+### Still open
+
+- Cold path against production, now with an Aug 19 deadline.
+- Dashboard freshness fix is committed but needs an image rebuild to deploy.
+- Obligation value columns (deposited/borrowed/LTV) still computed and discarded.
+- `startup-script` still unattached; reboot survival rests on the restart policy.
+- Phase 3 §2.4 (`main.rs` split), §2.6 (archive backfill).
+- Day 8 indexer code (gap detector) is committed but not deployed.
