@@ -1212,3 +1212,153 @@ transcription, `From` over `TryFrom` for classification, budget in slots not sec
 
 Growth-stage problems: no tests anywhere, `main.rs` at 900+ lines, gap detection
 blind spot on the success path, deploy docs drift from actual commands.
+
+## Day 8 — startup gap detection, and the cold analytical path (2026-08-09)
+
+Two Phase 3 items, plus the two commits from Day 7 that never got written up.
+
+### 0. Corrections to earlier entries
+
+Per the worklog doctrine, corrected forward rather than by editing the originals.
+
+| Claim | Where | Status |
+|---|---|---|
+| the 2026-08-05 gap is "73,874 slots missed" | `docs/backfill-phase2.md` §2a, and the Day 7 entry | **Off by one.** 73,874 is `end - start`. Both bounds are slots we hold — `schema/004_slot_gaps.sql` defines `end_slot` as "the first slot received after the gap" — so the slots never delivered are the ones strictly between: **73,873**. Confirmed independently by the new `coldquery gaps`, which derives it from the data. |
+| the dashboard is live at `http://34.44.9.74:8080/` | Day 7 entry, Phase 2 progress update | **Stale since 2026-08-07.** Port 8080 is closed and the proxy container is gone (commit `775ee31`). The dashboard is a static export in a GCS bucket. |
+
+### 1. Two Day 7 commits that were never logged
+
+Both landed after NOTES.md was last written, so the reasoning lived only in the
+commit messages.
+
+**`775ee31` — the dashboard became a static export.** This closed the last item
+from the Day 7 security incident. The endpoint itself was already sound after
+the remediation: fixed server-side queries, a `SELECT`-only `klend_ro`
+credential, cost ceilings. The residual risk was **co-location**, and that is
+the part worth remembering: code execution in that Node process lands on the
+only host in ClickHouse's IP access list, next to a metadata server that hands
+out the VM service account, which reads Secret Manager, which holds the **admin**
+ClickHouse password and the Alchemy token. Scoping the proxy's credential does
+nothing about the box's. So the fix was not a better guard, it was removing the
+thing being guarded: `web/export.js` on a 60s systemd timer writes `stats.json`
+to a public bucket, and nothing listens on the VM.
+
+Three COS constraints re-encountered, all previously paid for: no cron (use a
+systemd timer), `/var` is noexec (the unit runs bash with the script as data),
+docker is not pre-authenticated for Artifact Registry.
+
+**`2f641f6` — dashboard rebrand plus in-page knowledge panels.** Eleven topics
+behind info buttons, covering the `health_factor_bps` 1e6 scale, the `u64::MAX`
+no-borrows sentinel, inclusive resume, and why the page is static.
+
+### 2. Startup gap detection (Phase 3 §2.3) — the last open correctness bug
+
+Both existing `record_gap` call sites hang off a **visible failure**: a rejected
+subscribe, and a resume that errors before delivering anything. The 2026-08-05
+wedge produced neither — the process froze on a ClickHouse write with the
+container still reporting `Up` — so its 73,873-slot hole was invisible to the
+indexer and had to be derived by hand two days later.
+
+New `src/resume.rs`, pure and tested, called on the **success** path of every
+session. Extracted as a function first, deliberately: that is what makes it
+testable, and those tests are the safety net the `main.rs` split (§2.4) needs.
+
+**The design decision that took the longest, and the one that was initially
+wrong.** The subscription carries a slots filter, and slot notifications arrive
+once per slot regardless of klend activity. That makes them look like the
+obviously better clock, and the first version used them. It is wrong, because
+whether the provider applies `from_slot` to slot notifications or only to
+account updates is not contractually guaranteed. Three cases:
+
+1. Provider replays both → first account slot ≈ checkpoint. Clean.
+2. Provider replays **accounts only** → notifications open at the live tip,
+   thousands of slots past the checkpoint after a long restart, while account
+   replay has lost nothing. Judging on notifications **fabricates a gap here.**
+3. Provider honours neither and silently serves from the tip → the blind spot
+   worth catching. The first account slot lands at the tip. Correctly a gap.
+
+Account slots are right in all three; notification slots are wrong in (2). So
+the detector reads account slots, and the price is that klend quiet spans and
+short real holes look alike below the threshold.
+
+`RESUME_TOLERANCE_SLOTS = 600`, derived rather than picked:
+
+- **Floor, measured twice.** Day 7 put ordinary klend-quiet spans at 1..96
+  slots. The container logs pulled today put a healthy redeploy seam at **56**
+  slots (checkpoint 437,903,892 → first processed 437,903,948).
+- **Ceiling:** the replay window, ~6000 slots. Beyond it the subscribe fails
+  outright and the older call sites handle it.
+
+600 is ~6× the noise floor and an order of magnitude under the ceiling. The
+asymmetry is deliberate and follows the Agent C brief: a missed gap is one
+unrecorded hole, a false gap writes fiction into the table that **drives
+backfill**. Stated cost: a real hole under ~4 minutes goes unrecorded.
+
+Resume is INCLUSIVE, so `first_account_slot == resume_from` is the *healthy*
+case and is the first thing the tests pin.
+
+11 tests in `src/resume.rs`, including the 2026-08-05 wedge replayed through the
+detector and the observed healthy redeploy. Repo total: 24 (indexer), 12
+(snapshot), 18 (coldquery), 6 (parquet_export).
+
+### 3. The cold analytical path (Phase 3 §2.5)
+
+`src/coldpath.rs`, `bin/parquet_export.rs`, `bin/coldquery.rs`. Input decision
+from §3: **export from ClickHouse**, one direction, nothing new in the hot loop
+— the 2026-08-05 wedge happened in that loop, and it runs the one process whose
+downtime is unrecoverable.
+
+Full write-up in `docs/coldpath.md`. The headline: `coldquery gaps` is the hand
+derivation from `docs/backfill-phase2.md` §2a made repeatable, which upgrades
+`slot_gaps` from an assertion to something auditable. `slot_gaps` records what
+the indexer **noticed**; the query records what the data **shows**. On
+2026-08-05 those disagreed and nothing could say so. The threshold is imported
+from `resume.rs` so the live detector and the audit cannot drift.
+
+Verified rather than asserted: a partition predicate resolves to
+`ProjectionExec: expr=[200 as count(*)]` over `PlaceholderRowExec` — answered
+from directory listing plus Parquet footer, reading no data — and a slot-range
+predicate reports `row_groups_pruned_statistics=1`.
+
+### 4. Defect found: klickhouse truncates `FixedString` at the first null byte
+
+`types/deserialize/string.rs` does `position(|x| *x == 0)` then `truncate`.
+Fine for the padded ASCII the type usually holds. A Solana pubkey is 32
+arbitrary bytes, and **~12% contain at least one `0x00`** (`1 - (255/256)^32`),
+so ~12% of pubkeys read back through it come out short.
+
+The indexer never hit this because it only ever **writes** pubkeys, and
+serialization pads back to N. The exporter is the first code here to read them
+out. Fixed by selecting `hex(pubkey)` and decoding in Rust.
+
+The part worth keeping: it surfaced as a hard error rather than as silently
+corrupt data **only because** `FixedSizeBinaryBuilder::append_value` rejects a
+width mismatch and that error was propagated instead of padded. A `resize(32)`
+at that line would have produced Parquet files that looked fine and joined
+against nothing. Same instinct as the rest of the project — make wrongness
+visible — paying off in a place nobody was watching.
+
+### 5. Validated locally, not in production
+
+Throwaway `klend_coldpath_test` database on the local ClickHouse, shaped to have
+known answers, dropped afterwards. 4,301 rows with one planted replay duplicate
+exported as 4,300 (FINAL collapsed it); a run of slots straddling 438,000,000
+split 4,100 / 200, matching the arithmetic; the 2026-08-05 gap came back at its
+real coordinates; null-padded fixture pubkeys survived as full 44-character
+base58.
+
+**Not yet run against ClickHouse Cloud.** The IP access list holds one entry,
+the VM, and that VM is an e2-micro that cannot compile Rust. Production export
+needs a container build like the indexer's. Output is also still local disk
+rather than object storage.
+
+### Still open
+
+- Phase 3 §2.2 cheap ops fixes: `DEPLOY.md` project drift, watchdog unverified
+  since the redeploy, two dead Secret Manager versions.
+- Phase 3 §2.4: split `main.rs` (now ~1000 lines). Unblocked — the state-machine
+  tests it was waiting on exist.
+- Phase 3 §2.6: archive backfill for the 73,873-slot hole.
+- The cold path has never touched production data.
+- 8 local commits unpushed. Still a deliberate decision, not an oversight: the
+  Day 7 entry describes the security incident in detail.

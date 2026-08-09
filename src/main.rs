@@ -21,11 +21,13 @@ use yellowstone_grpc_proto::geyser::{
 
 mod ch;
 mod decode;
+mod resume;
 mod schema;
 
 // Glob-imported so the moved items keep their original unqualified names here and
 // the extraction stays a pure move, with no call-site churn to review.
 use ch::connect_clickhouse;
+use resume::{classify_resume, startup_gap_reason, ResumeVerdict};
 use schema::*;
 
 
@@ -552,6 +554,18 @@ async fn main() -> Result<()> {
         let mut got_data = false;
         let mut stream_err: Option<String> = None;
 
+        // Startup gap detection (§2.3). The first ACCOUNT slot this session, and
+        // whether the seam has been judged yet. Both reset per session because
+        // each subscribe is its own resume seam.
+        //
+        // Accounts only, deliberately — NOT the slots filter, whose
+        // notifications are denser and look like the better clock. See
+        // `resume::classify_resume`: if the provider replays accounts but opens
+        // slot notifications at the live tip, judging on notifications invents a
+        // gap after every long restart.
+        let mut session_first_slot: Option<u64> = None;
+        let mut resume_judged = false;
+
         'stream: loop {
             tokio::select! {
                 maybe = stream.next() => {
@@ -580,6 +594,7 @@ async fn main() -> Result<()> {
                         Some(UpdateOneof::Account(update)) => {
                             let Some(info) = update.account else { continue 'stream };
                             got_data = true;
+                            session_first_slot.get_or_insert(update.slot);
                             acct_since_lag += 1;
 
                             let kind = AccountKind::from(info.data.as_slice());
@@ -761,6 +776,69 @@ async fn main() -> Result<()> {
 
                         _ => {}
                     }
+
+                    // ── Startup gap detection ──────────────────────────────
+                    // Runs on the SUCCESS path, which is the point: the two
+                    // older `record_gap` sites both hang off a visible failure
+                    // (a rejected subscribe, a stream error before any data).
+                    // The 2026-08-05 wedge produced neither — the process froze
+                    // on a ClickHouse write with the container still `Up` — so
+                    // its 73,874-slot hole was invisible to the indexer and had
+                    // to be derived by hand from `account_updates` two days
+                    // later. A subscribe that succeeds and then serves from far
+                    // past the checkpoint is the same loss with no error
+                    // attached, and this is the only place it is observable.
+                    //
+                    // Judged once per session, on the first account slot seen:
+                    // later slots say nothing about the seam.
+                    if !resume_judged && let Some(first) = session_first_slot {
+                        resume_judged = true;
+                        match classify_resume(resume_from, first) {
+                            ResumeVerdict::NotApplicable => {}
+                            ResumeVerdict::Clean { drift: 0 } => {}
+                            ResumeVerdict::Clean { drift } => {
+                                // Inside tolerance, so not recorded — but worth
+                                // saying out loud. If these lines start showing
+                                // drift near RESUME_TOLERANCE_SLOTS, the
+                                // threshold is being leaned on rather than
+                                // cleared, and its derivation needs revisiting.
+                                eprintln!(
+                                    "resume seam clean: first slot {first} is {drift} past \
+                                     checkpoint (within tolerance)"
+                                );
+                            }
+                            ResumeVerdict::Gap {
+                                start_slot,
+                                end_slot,
+                                missed,
+                            } => {
+                                eprintln!(
+                                    "STARTUP GAP: subscribe succeeded but the stream opened at \
+                                     {end_slot}, {} slots past checkpoint {start_slot}. \
+                                     {missed} slots were never delivered and cannot be \
+                                     re-served. Recording for backfill."
+                                    , end_slot - start_slot
+                                );
+                                if let Some(w) = writer.as_mut() {
+                                    // Same fire-and-forget contract as the other
+                                    // two sites: a failed gap insert must not
+                                    // take down a stream that is otherwise
+                                    // healthy and ingesting.
+                                    if let Err(e) = w
+                                        .record_gap(
+                                            STREAM,
+                                            start_slot,
+                                            end_slot,
+                                            &startup_gap_reason(end_slot - start_slot),
+                                        )
+                                        .await
+                                    {
+                                        eprintln!("failed to record startup gap: {e:#}");
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // Time-based flush. Guarded off in sampling-only mode, where there is
@@ -847,6 +925,14 @@ async fn main() -> Result<()> {
         // above never fires and retrying the same from_slot loops forever (the
         // 2026-08-05 restart hit exactly this). Start the next attempt from the tip and
         // leave the gap explicit for Block 2 backfill: availability over a hole (§8c).
+        // No suppression needed against the startup detector above, and the
+        // reason is not local: that detector only fires after an account update,
+        // which is the same event that sets `got_data`. The two conditions are
+        // mutually exclusive by construction. Worth knowing if the detector is
+        // ever re-fed from slot notifications — both could then fire for one
+        // seam, and since `slot_gaps` is ReplacingMergeTree ORDER BY (stream,
+        // start_slot), the second row would silently replace the first and
+        // substitute a staler `end_slot`.
         if !got_data && let Some(s) = resume_from {
             eprintln!(
                 "resume from_slot={s} unreachable (no data before error); starting from tip. \

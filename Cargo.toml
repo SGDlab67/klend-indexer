@@ -26,3 +26,11 @@ klend-interface = { path = "vendor/klend-interface" }
 serde_json = "1.0.151"
 base64 = "0.22"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "http2", "charset", "json"] }
+# Cold analytical path. Arrow and Parquet are deliberately NOT declared as their
+# own dependencies: DataFusion re-exports both (`datafusion::arrow`,
+# `datafusion::parquet`), and taking them from there makes a version skew
+# impossible to express. Declaring `arrow = "59"` alongside `datafusion = "54"`
+# compiles until the day their releases diverge, and then fails as a RecordBatch
+# that is the wrong RecordBatch — a type error whose message names the same type
+# twice. One source, no skew.
+datafusion = "54"
