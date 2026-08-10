@@ -1551,3 +1551,121 @@ thing protecting the final accumulation window.
 - `startup-script` still unattached; reboot survival rests on the restart policy.
 - Phase 3 §2.4 (`main.rs` split), §2.6 (archive backfill).
 - Day 8 indexer code (gap detector) is committed but not deployed.
+
+## Day 8 (cont. II) — value columns, the flow view, and a broken redeploy path (2026-08-09)
+
+Continues the entry above. Everything here followed from one question: what
+actually puts the data flow at risk.
+
+### 1. Live data flow section
+
+`web/index.html` gains a four-stage animated pipeline, paced from a new `flow`
+query (per-minute writes split by account type, last 60 minutes).
+
+The rule the section is built around: **when ingest stops, the animation stops.**
+A flow diagram is the easiest thing on a dashboard to fake — left on a CSS loop
+it animates just as convincingly over a dead pipeline as a live one. Dot count
+and dot speed both derive from measured throughput, and the stall threshold, the
+status dot, and the server-side watchdog all read the same freshness number.
+
+Two bugs came out of testing the **stalled** state rather than only the happy
+path:
+
+- The header rendered `no writes for 22m ago`, because the duration helper baked
+  in a suffix the two sentences need in different positions.
+- More seriously, the sparkline packed whatever buckets existed left-to-right
+  across an axis labelled "60 min ago → now". During a stall the series is short,
+  so the chart **silently rescaled and looked normal** while 22 minutes of nothing
+  were missing. Bars are now placed by when they happened across a fixed 60-slot
+  window, so an outage renders as an actual hole. The one chart whose job is to
+  make an outage obvious was hiding it.
+
+The newest minute is excluded from the throughput average: it is a partial
+bucket and always reads low, which would make a healthy pipeline appear to be
+dying whenever the exporter runs mid-minute.
+
+### 2. Obligation value columns (§11c's demo-legibility gap)
+
+`decode.rs` has computed `deposited_value_sf`, `borrowed_assets_market_value_sf`,
+`borrow_factor_adjusted_debt_value_sf`, `allowed_borrow_value_sf`,
+`unhealthy_borrow_value_sf` and `lowest_deposit_liquidation_ltv` since the
+decoder landed. The writer persisted **only the derived health factor**. The
+store could answer "how healthy is this position" but not "how large is it" —
+the half a non-specialist reads, and the half any analytical summary needs.
+
+`schema/008_obligation_values.sql` adds six columns. Stored **raw and undivided**:
+these are Kamino `Fraction` values, U68F60, so the on-chain integer is the real
+value × 2^60. Converting at write time would bake that assumption into history —
+if the scale is ever wrong, every stored row becomes silently incorrect and
+unrecoverable. Dividing at the query edge makes a mistaken scale a one-line fix
+in a view rather than a backfill. Same reasoning that keeps raw payloads in
+`account_updates`.
+
+`borrow_factor_adjusted_debt_sf` is stored even though it is only the denominator
+`health_factor_bps` was already derived from, so the derived number can be
+**audited against its own inputs** rather than trusted.
+
+Verified against a real ClickHouse before going near production: 003 then 008
+applied, a row inserted through the exact `INSERT` column list, read back scaled
+— deposited 10000, borrowed 5000, max borrow 8500, headroom 3500, liquidation
+LTV 85%, health 2.0, current LTV 50%. `UInt128` needs an explicit `toFloat64()`
+before dividing, which the dashboard queries will need.
+
+**Applied to production:** `obligation_snapshots` went 14 → 20 columns. Ingest
+unaffected (age 3s immediately after), because `ADD COLUMN` is metadata-only and
+the running indexer names its columns explicitly.
+
+**Ordering is load-bearing** and is now recorded in the migration: ALTER first,
+binary second. The reverse fails every insert until the ALTER lands. Rows written
+before the migration read back 0, indistinguishable from a genuinely empty
+position, so queries must bound by slot or filter `> 0`.
+
+### 3. The documented redeploy path did nothing
+
+Two defects, both of which made `DEPLOY.md` read as correct:
+
+- `sudo google_metadata_script_runner startup` was a **no-op** — no
+  `startup-script` metadata attached (§1 of the previous entry). Phase 3 §0 spent
+  paragraphs arguing whether that command was the right redeploy path; it was
+  attached to nothing.
+- `$(gcloud config get-value project)` resolves to `gen-lang-client-0502946726`
+  on this workstation, not `agentbiz-sungodlab`. **Confirmed by running it.**
+  Following the build step verbatim targets the wrong Artifact Registry.
+
+`deploy/install-startup-script.sh` renders `__CH_URL__` from `local.env` and
+attaches the result, following the same pattern as the watchdog and dashboard
+installers. It re-runs the placeholder guard against the *unrendered* file before
+attaching — not for today, but so a future edit that drops the abort is caught
+here rather than by a reboot that takes the pipeline down.
+
+`startup-script` is now attached, so the documented redeploy works for the first
+time.
+
+### 4. Insights brief — decided, not yet built
+
+Chosen: **deterministic templates, not an LLM.** Rules compute real deltas,
+templates render them with the numbers inline. Every sentence traceable to a
+query, reproducible, no new dependency in the 60-second job.
+
+The reasoning is the same one that runs through the rest of the page: an LLM
+writing confident narrative over 5.5 days of gap-containing, price-less data is
+exactly the failure mode this project has spent two incidents learning to avoid.
+
+Constraints recorded so they are not rediscovered:
+- **~5.5 days of history**, with the 73,873-slot hole in it. Day-over-day is
+  solid; "insight of the week" is not supportable until ~Aug 11-12.
+- **No USD prices.** All amounts are native token units.
+- **Blocked on §2 landing in production** — position-size findings have no data
+  until the new binary has been running.
+
+Sequencing chosen: value columns → insights → cold path.
+
+### Still open
+
+- Cloud Build in flight; deploy is one command once it lands, and that relaunch
+  also ships the Day 8 gap detector, committed but undeployed all day.
+- Dashboard changes (`ingest_age_s`, flow section) need an export image rebuild;
+  `index.html` and `queries.js` must ship together or every field after
+  `checkpoint` shifts by one.
+- Cold path against production, hard Aug 19 deadline.
+- Insights brief.
