@@ -34,8 +34,20 @@ COPY --from=builder /build/target/release/klend-indexer /usr/local/bin/klend-ind
 # to run on the VM because the VM is the only host on ClickHouse's IP access list.
 # Reached with `docker run --entrypoint /usr/local/bin/klend-snapshot`.
 COPY --from=builder /build/target/release/snapshot /usr/local/bin/klend-snapshot
+# The cold path. Both binaries ship for the same reason as klend-snapshot: the VM
+# is the only host on ClickHouse Cloud's IP access list, and it is an e2-micro that
+# cannot compile Rust. Without them in the image the export simply cannot be run
+# anywhere, which is the actual blocker on the 2026-08-19 credit expiry, not the
+# export code itself.
+#   docker run --entrypoint /usr/local/bin/klend-parquet-export ... -v /var/klend:/out
+#   docker run --entrypoint /usr/local/bin/klend-coldquery ...
+COPY --from=builder /build/target/release/parquet_export /usr/local/bin/klend-parquet-export
+COPY --from=builder /build/target/release/coldquery /usr/local/bin/klend-coldquery
 
-# Run unprivileged. The process needs no filesystem writes; all state is in ClickHouse.
+# Run unprivileged. The indexer needs no filesystem writes; all its state is in
+# ClickHouse. The export does write, so it needs a bind-mounted directory that
+# uid 10001 can write to (COS mounts /var noexec, which blocks execution, not
+# writes, so /var/klend is a valid target for the Parquet output).
 RUN useradd -r -u 10001 klend
 USER klend
 
