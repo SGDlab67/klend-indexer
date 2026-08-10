@@ -1831,3 +1831,46 @@ Tests 71 → 83.
 - `bin/snapshot` to re-establish current Obligation state, after deploy.
 - Insights brief, blocked on Obligation data.
 - The transaction-stream scoping decision for Artefact 2.
+
+## Day 8 (cont. V): the image is verified, the deploy is not
+
+**2026-08-10, ~22:20 UTC**
+
+Cloud Build `20e6f526` SUCCESS, 36m24s,
+digest `sha256:45653da16786e4e77d79bb193d6c409d89977407e94053b3bee66177cd6c8fa0`.
+Carries the slice removal (`f6c0aa4`), the payload guard (`22008d9`), the
+cold-path binaries (`25e226c`) and the snapshot export (`292230f`).
+
+### Verified the binaries are in the image, rather than trusting the Dockerfile
+
+The whole point of the unarmed-guard pattern is that a correct `COPY` line is
+not evidence the file arrived. Exported the image filesystem and listed it:
+
+```
+usr/local/bin/klend-coldquery       169383872
+usr/local/bin/klend-indexer          12158736
+usr/local/bin/klend-parquet-export   18899648
+usr/local/bin/klend-snapshot         13691336
+```
+
+Read with `docker create` + `docker export | tar -t`, which does not execute
+anything, so the host-platform mismatch (amd64 image, arm64 host) is irrelevant.
+Checking presence should not require the ability to run the thing.
+
+### The loss is still growing
+
+| Checked | Empty rows | Accounts | Hours |
+|---|---|---|---|
+| earlier 2026-08-10 | 17,289 | - | 44 |
+| 2026-08-10 21:45 | 24,805 | 2,301 | 67 |
+| 2026-08-10 22:22 | 24,985 | 2,316 | 68 |
+
+Span unchanged at its start: slot 437,903,892, `2026-08-08 02:03:13`. The
+cutover is still clean, and every hour that passes adds ~180 rows and a handful
+of newly-affected accounts.
+
+The fix has existed and been pushed for hours. What is missing is one command
+being run on the VM. **Distance from "fixed" to "deployed" is not zero, and
+nothing in the repository measures it.** That is the same shape as the seven
+unarmed guards, one layer further out: the artifact is correct, built,
+published, and still not reached.
