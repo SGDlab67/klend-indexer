@@ -1765,3 +1765,69 @@ catching before it reached a published number.
 - Cold path against production, hard Aug 19 deadline.
 - Insights brief, still blocked on Obligation data flowing.
 - The transaction-stream scoping decision for Artefact 2.
+
+## Day 8 (cont. IV) — the snapshot export, and two type-boundary defects
+
+Unblocked the Aug 19 deadline while the deploy stayed blocked on a permission
+grant.
+
+### The actual blocker was not the export code
+
+`parquet_export` and `coldquery` were **never in the runtime image**. The VM is
+the only host on ClickHouse Cloud's IP access list and cannot compile Rust, so
+the export could not run anywhere. Fixed in `25e226c`; production runbook in
+`docs/coldpath.md` §7.
+
+Same shape as the seven unarmed guards: the artifact existed and was correct,
+and nothing connected it to a place it could run.
+
+### `obligation_snapshots` had no export path at all
+
+It is the table Artefact 2 is built on -- 163,184 decoded rows across 140,185
+accounts -- and the credit expiry would have taken it while `account_updates`
+survived. Added in `292230f`.
+
+### Two defects, both found by running it, neither visible in review
+
+**1. `Decimal128(38,0)` holds `10^38 - 1`, not `i128::MAX`.** 1.7× apart. The
+first guard used `i128::try_from`. A fixture row of `i128::MAX` passed the
+parser, the Arrow builder, the Parquet writer and the reader, and came back with
+its last digit gone:
+
+```
+inserted: 170141183460469231731687303715884105727
+returned:  17014118346046923173168730371588410572
+```
+
+Arrow stores the raw `i128` and formats to the declared precision, so no layer
+has any reason to object. Six tests now pin the boundary, including `u128::MAX`,
+which a naive `as i128` cast wraps to `-1` and would write as a negative value.
+
+**2. `coldquery` registers a whole directory tree as ONE table.** Writing a
+second Parquet file into the shared partition directories would have put two
+schemas under one registration. Each table now gets its own root. Caught by
+asking what the *existing* reader would do with the new writer's output, before
+running it.
+
+Both are type-boundary defects that produce plausible-looking output. The
+generalisable move: **build the fixture out of values the type cannot represent,
+not values it typically holds.** That is what caught the klickhouse
+`FixedString` truncation too.
+
+### Verified end to end
+
+Against local ClickHouse, three deliberately hostile rows: a pubkey with leading
+and trailing `0x00` survived intact, `10^38-1` and `u64::MAX` round-tripped
+exactly, and `i128::MAX` aborted the export leaving only a `.tmp` with nothing
+published. Fixture removed afterwards; the local table is back to empty.
+
+Tests 71 → 83.
+
+### Still open
+
+- **Deploy remains blocked** on the permission classifier. Production is still
+  writing zero-length Obligation rows, ~400/hour.
+- Cold path has still never run against production. It now *can*.
+- `bin/snapshot` to re-establish current Obligation state, after deploy.
+- Insights brief, blocked on Obligation data.
+- The transaction-stream scoping decision for Artefact 2.

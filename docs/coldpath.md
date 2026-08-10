@@ -35,10 +35,17 @@ bad export is deleted rather than repaired.
 ## 2. Layout
 
 ```
-<dir>/slot_bucket=000437000000/account_updates.parquet
-<dir>/slot_bucket=000438000000/account_updates.parquet
+<dir>/account_updates/slot_bucket=000437000000/account_updates.parquet
+<dir>/account_updates/slot_bucket=000438000000/account_updates.parquet
+<dir>/obligation_snapshots/slot_bucket=000437000000/obligation_snapshots.parquet
+<dir>/obligation_snapshots/slot_bucket=000438000000/obligation_snapshots.parquet
 ```
 
+- **One root per table**, and this level is load-bearing. Registration takes a
+  whole tree, so two tables sharing partition directories would be registered as
+  a single table with two schemas. Added when `obligation_snapshots` got an
+  export path; before that the tree had no `<table>` level and would have broken
+  the moment a second file landed beside the first.
 - **1M slots per partition** (~4.6 days), one tenth of the ClickHouse partition
   width. ClickHouse's partitions are sized for merge behaviour on a
   continuously written table; these are sized for how little a query has to open.
@@ -120,6 +127,32 @@ It surfaced as an error rather than as bad data only because
 was propagated instead of padded. A `resize(32)` there would have produced
 Parquet files that looked fine and joined against nothing.
 
+## 5b. Second defect, same shape, found the same way
+
+**`Decimal128(38, 0)` holds `10^38 - 1`, not `i128::MAX`.** Those differ by
+1.7×, and the first cut of the `UInt128` value-column parser guarded with
+`i128::try_from` — the wrong bound.
+
+A fixture row of `i128::MAX` was accepted by the parser, by the Arrow builder,
+by the Parquet writer, and by the reader, and came back as **38 digits with the
+last one silently gone**:
+
+```
+inserted: 170141183460469231731687303715884105727
+returned:  17014118346046923173168730371588410572
+```
+
+Arrow stores the raw `i128` and formats it to the declared precision, so nothing
+in the write path has any reason to complain. Now bounded by `MAX_SF_VALUE` and
+rejected loudly, with six tests pinning the boundary including `u128::MAX`,
+which a naive `as i128` cast would wrap to `-1` and write as a negative value.
+
+Worth noting what the two defects in §5 and §5b have in common: **both are at a
+type boundary, both produce plausible-looking output, and both were found by
+running the code against a deliberately extreme fixture rather than by reading
+it.** Neither is visible in review. The general move is to build the fixture out
+of the values a type cannot represent, not the values it typically holds.
+
 ## 6. Validation
 
 Local ClickHouse, throwaway `klend_coldpath_test` database, dropped afterwards.
@@ -131,6 +164,19 @@ The fixture was shaped to have known answers:
   arithmetic exactly.
 - The 2026-08-05 gap at its real coordinates → `gaps` returns
   **437,313,969 → 437,387,843, 73,873 slots**.
+
+Snapshot export validated separately (2026-08-09), against the live local
+`klend.obligation_snapshots`, with three rows chosen to be hostile:
+
+- A pubkey with **leading and trailing `0x00`** bytes → survives intact, which is
+  the §5 trap.
+- `10^38 - 1` in every `*_sf` column → round-trips **exactly**.
+- `u64::MAX` in `health_factor_bps` and `lowest_deposit_liquidation_ltv` →
+  round-trips exactly.
+- `i128::MAX` → **export aborts** and the partition is left as a `.tmp` with
+  nothing published, confirming both the §5b bound and the rename discipline.
+
+Fixture rows were removed afterwards; the table is back to empty.
 - Fixture pubkeys were null-padded, i.e. exactly the truncation case, and came
   back as full 44-character base58.
 
