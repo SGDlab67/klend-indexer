@@ -89,7 +89,8 @@ security find-generic-password -a "$USER" -s klend-clickhouse-cloud-password -w 
 gcloud artifacts repositories create klend \
   --repository-format=docker --location=us-central1
 gcloud builds submit \
-  --tag us-central1-docker.pkg.dev/$(gcloud config get-value project)/klend/klend-indexer:latest .
+  --project agentbiz-sungodlab \
+  --tag us-central1-docker.pkg.dev/agentbiz-sungodlab/klend/klend-indexer:latest .
 ```
 
 Cloud Build compiles the multi-stage Dockerfile in Google's infra and pushes to
@@ -102,7 +103,10 @@ in-binary webpki roots.
 The default compute service account needs to read the secrets and pull the image:
 
 ```bash
-PROJECT=$(gcloud config get-value project)
+# Explicit, never `gcloud config get-value project`. Verified 2026-08-09: the
+# active gcloud project on the workstation is gen-lang-client-0502946726, so
+# every command that interpolated it silently targeted the wrong project.
+PROJECT=agentbiz-sungodlab
 PNUM=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
 SA="${PNUM}-compute@developer.gserviceaccount.com"
 gcloud projects add-iam-policy-binding "$PROJECT" \
@@ -162,7 +166,8 @@ prints `resuming from checkpoint slot=... (inclusive)` with no gap warning.
 ## Redeploy a new build
 
 ```bash
-gcloud builds submit --tag us-central1-docker.pkg.dev/$(gcloud config get-value project)/klend/klend-indexer:latest .
+gcloud builds submit --project agentbiz-sungodlab \
+  --tag us-central1-docker.pkg.dev/agentbiz-sungodlab/klend/klend-indexer:latest .
 gcloud compute ssh klend-indexer --zone=us-central1-a \
   --command='sudo google_metadata_script_runner startup'   # re-runs the startup-script: pulls :latest, relaunches
 ```
