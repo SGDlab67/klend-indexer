@@ -103,9 +103,117 @@ pub fn account_updates_schema() -> Arc<Schema> {
     ]))
 }
 
+/// Precision for the U68F60 fixed-point value columns.
+///
+/// Arrow has no unsigned 128-bit integer, so the `*_sf` columns land in
+/// `Decimal128(38, 0)`: scale zero, because these are raw integers and dividing
+/// by `2^60` here would bake the scale assumption into the files exactly as
+/// writing them divided into ClickHouse would have. Store what you were given;
+/// derive at the query edge.
+///
+/// The ceiling is real but not binding. `Decimal128(38, 0)` holds up to
+/// `10^38 - 1` (~9.99e37) while `u128` reaches ~3.4e38, so the top of the source
+/// range is unrepresentable. At `2^60` scaling, `10^38 - 1` is a position of
+/// ~8.7e19 USD, which is not a number this protocol can produce.
+///
+/// ⚠️ The bound is the **precision**, not `i128::MAX`. Those differ by 1.7×, and
+/// the difference is not academic: a first cut guarded with `i128::try_from` and
+/// a fixture row of `i128::MAX` round-tripped to a 38-digit number with the last
+/// digit silently gone. Arrow stores the raw `i128` and formats to `precision`,
+/// so an over-precision value is not rejected anywhere in the write path — it is
+/// simply read back wrong. See `MAX_SF_VALUE`.
+pub const SF_DECIMAL_PRECISION: u8 = 38;
+
+/// Largest value representable in `Decimal128(SF_DECIMAL_PRECISION, 0)`.
+///
+/// `10^38 - 1`. Anything above this must be rejected at export rather than
+/// written, because nothing downstream will notice.
+pub const MAX_SF_VALUE: i128 = 99_999_999_999_999_999_999_999_999_999_999_999_999;
+
+/// The Arrow schema for exported `obligation_snapshots`.
+///
+/// This is the table Artefact 2 is actually built on — `account_updates` is the
+/// raw substrate, but the decoded snapshots are what answers a question about
+/// obligation health. It exports separately because it is a separate table with
+/// its own ReplacingMergeTree collapse, not a projection of the other.
+///
+/// Divergences from the ClickHouse table:
+///
+/// - The `*_b58` columns are **dropped**. They are ALIAS/derived renderings of
+///   `pubkey` and `owner`, and carrying both a binary and a text spelling of the
+///   same key doubles the column for no query that the base58 UDF in
+///   `bin/coldquery.rs` cannot serve.
+/// - The five `UInt128` value columns become `Decimal128(38, 0)`. See above.
+/// - `lowest_deposit_liquidation_ltv` stays `UInt64`: it is basis-point-ish, not
+///   fixed point, and does not share the `_sf` scaling.
+pub fn obligation_snapshots_schema() -> Arc<Schema> {
+    let sf = |name: &str| Field::new(name, DataType::Decimal128(SF_DECIMAL_PRECISION, 0), false);
+    Arc::new(Schema::new(vec![
+        Field::new("slot", DataType::UInt64, false),
+        Field::new("write_version", DataType::UInt64, false),
+        Field::new("pubkey", DataType::FixedSizeBinary(32), false),
+        Field::new("owner", DataType::FixedSizeBinary(32), false),
+        Field::new("lending_market", DataType::FixedSizeBinary(32), false),
+        Field::new("num_deposits", DataType::UInt8, false),
+        Field::new("num_borrows", DataType::UInt8, false),
+        Field::new("health_factor_bps", DataType::UInt64, false),
+        Field::new("flags", DataType::UInt8, false),
+        Field::new("elevation_group", DataType::UInt8, false),
+        Field::new("referrer", DataType::FixedSizeBinary(32), false),
+        Field::new(
+            "ingested_at",
+            DataType::Timestamp(datafusion::arrow::datatypes::TimeUnit::Millisecond, None),
+            false,
+        ),
+        sf("deposited_value_sf"),
+        sf("borrowed_value_sf"),
+        sf("borrow_factor_adjusted_debt_sf"),
+        sf("allowed_borrow_value_sf"),
+        sf("unhealthy_borrow_value_sf"),
+        Field::new("lowest_deposit_liquidation_ltv", DataType::UInt64, false),
+    ]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_schema_drops_the_base58_duplicates() {
+        let s = obligation_snapshots_schema();
+        assert!(s.field_with_name("pubkey").is_ok());
+        assert!(s.field_with_name("pubkey_b58").is_err());
+        assert!(s.field_with_name("owner_b58").is_err());
+    }
+
+    #[test]
+    fn value_columns_keep_their_raw_fixed_point_scale() {
+        // Scale 0. A non-zero scale here would mean the 2^60 divide happened at
+        // export, which is the mistake this project already decided not to make
+        // at the write path.
+        let s = obligation_snapshots_schema();
+        for name in [
+            "deposited_value_sf",
+            "borrowed_value_sf",
+            "borrow_factor_adjusted_debt_sf",
+            "allowed_borrow_value_sf",
+            "unhealthy_borrow_value_sf",
+        ] {
+            match s.field_with_name(name).expect("column present").data_type() {
+                DataType::Decimal128(p, 0) => assert_eq!(*p, SF_DECIMAL_PRECISION),
+                other => panic!("{name} must be Decimal128(_, 0), got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn every_snapshot_column_is_non_null() {
+        // Non-nullable lets Parquet skip definition levels. Every source column
+        // is non-null, so this must stay true as columns are added.
+        for f in obligation_snapshots_schema().fields() {
+            assert!(!f.is_nullable(), "{} became nullable", f.name());
+        }
+    }
 
     #[test]
     fn partition_dirs_sort_lexically_in_slot_order() {

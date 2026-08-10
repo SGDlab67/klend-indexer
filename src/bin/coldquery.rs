@@ -161,8 +161,12 @@ async fn main() -> Result<()> {
     let ctx = SessionContext::new();
     ctx.register_udf(base58_udf());
 
-    // One logical table over a directory of per-partition files, laid out as
-    // `<dir>/slot_bucket=<padded>/account_updates.parquet`.
+    // One logical table per directory of per-partition files, laid out as
+    // `<dir>/<table>/slot_bucket=<padded>/<table>.parquet`.
+    //
+    // The `<table>` level is load-bearing: registration takes a whole tree, so
+    // two tables sharing partition directories would be registered as one table
+    // with two schemas. Separate roots make that unrepresentable.
     //
     // Declaring the partition column is what makes the directory name a column
     // instead of a path: a predicate on `slot_bucket` is answered from the
@@ -171,20 +175,31 @@ async fn main() -> Result<()> {
     // tight only because the exporter wrote the rows in slot order.
     // Two levels of skipping, neither of which the hot store's
     // `ORDER BY (pubkey, slot, write_version)` can offer for a slot range.
-    ctx.register_parquet(
-        "account_updates",
-        &dir,
-        ParquetReadOptions::default()
+    //
+    // `obligation_snapshots` is registered best-effort: it is the newer export
+    // and an older Parquet tree will not have it. Failing the whole tool because
+    // a second table is absent would break `gaps`, which is the query that
+    // audits the first one.
+    for (table, required) in [("account_updates", true), ("obligation_snapshots", false)] {
+        let path = format!("{}/{table}", dir.trim_end_matches('/'));
+        let opts = ParquetReadOptions::default()
             .parquet_pruning(true)
             .table_partition_cols(vec![(
                 coldpath::PARTITION_COL.to_string(),
                 DataType::Utf8,
-            )]),
-    )
-    .await
-    .with_context(|| {
-        format!("register parquet at {dir} (run `cargo run --bin parquet_export` first)")
-    })?;
+            )]);
+        match ctx.register_parquet(table, &path, opts).await {
+            Ok(()) => {}
+            Err(e) if !required => {
+                eprintln!("note: {table} not registered ({e}); queries using it will fail");
+            }
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("register parquet at {path} (run `cargo run --bin parquet_export` first)")
+                })
+            }
+        }
+    }
 
     let sql = match command.as_str() {
         "gaps" => GAPS_SQL.replace("{threshold}", &RESUME_TOLERANCE_SLOTS.to_string()),
