@@ -1669,3 +1669,99 @@ Sequencing chosen: value columns → insights → cold path.
   `checkpoint` shifts by one.
 - Cold path against production, hard Aug 19 deadline.
 - Insights brief.
+
+## Day 8 (cont. III) — the data-slice truncation: 44 hours of Obligation lost
+
+The worst incident of the project, found by auditing the data rather than by any
+guard, and caused by an optimisation this project's own plan called "the primary
+cost lever".
+
+### What broke
+
+`accounts_data_slice { offset: 0, length: 4664 }` is applied at the **request**
+level, not per account type. Yellowstone returns an **empty** payload for any
+account shorter than the requested length — not a truncated one, empty.
+
+Reserve is 4,664 bytes and matched exactly, so it kept flowing perfectly.
+Obligation is 3,344 and UserMetadata is 1,032. From slot **437,903,892**
+(2026-08-08 02:02 UTC) both arrived with zero-length payloads, classified
+`untagged:0b`, and were stored as empty rows.
+
+The cutover is clean, which is what made it unambiguous:
+
+```
+Obligation      3344   165066   437280282 .. 437903877
+untagged:0b        0    17289   437903892 .. 438304801
+```
+
+No overlap. 1,396 of the 1,708 `untagged:0b` pubkeys were previously Obligations.
+
+Unrecoverable as history. Current state is recoverable via `getProgramAccounts`.
+
+### Why every guard stayed green
+
+This is the part worth keeping. The project has: checkpoint advance, ingest
+freshness (p50 4s), `slot_gaps` detection, `--restart always`, a watchdog proven
+by an induced 18-minute stall that same day, and a dashboard liveness dot fixed
+that same day. **Every one of them was correct and green throughout.**
+
+None of them was wrong. They all answer "is data moving?" and data was moving —
+at full rate, with fresh timestamps, with no missed slots. Nothing in the suite
+asks "is the data the right *shape*?"
+
+> Throughput is not integrity. A monitoring suite built entirely from liveness
+> signals is blind to "working perfectly and producing garbage".
+
+Note the timing: this was ingesting empty Obligations for the entire session in
+which the watchdog was installed, the liveness dot was fixed, and the flow
+sparkline was corrected. A full day of monitoring work, on a pipeline that was
+actively destroying data the whole time.
+
+### The cost premise was also wrong
+
+The plan justified the slice as the primary cost lever, "~87% of spend is reserve
+churn". Measured against the actual quota: Alchemy is at **15,540 of 66,666,667
+CUs, 0.02% of plan**, peak 390 of 10,000 CU/s. The saving was against a bill that
+does not exist. A share-of-spend framing makes any optimisation look urgent
+without ever checking the absolute number against the limit.
+
+Meanwhile the real cost problem that week was ClickHouse at $18.02/day, set by
+write cadence. The cost attention was pointed at the cheap component the whole
+time.
+
+### Fixed
+
+- `f6c0aa4` — slice removed. One request-level slice cannot serve both Obligation
+  (3,344) and Reserve decode (4,664). If bandwidth ever binds, the correct shape
+  is one subscription per account type.
+- `22008d9` — `src/payload.rs`. A funded account with a zero-length payload is a
+  shape the chain does not produce, so this guard needs **no threshold**, unlike
+  `RESUME_TOLERANCE_SLOTS`. Verified against the incident: all 17,289 affected
+  rows carry `lamports > 0`, zero exceptions. Would have fired on the first
+  Obligation, ~44 hours earlier. 11 tests, including `a_healthy_reserve_stream_
+  never_fires` — the counterfactual a throughput guard cannot distinguish.
+- Test count 60 → 71.
+
+### Artefact 2 assessment, done in passing
+
+`docs/artefact2-dataset.md`. The finding that matters beyond this incident:
+**four of the plan's five candidate datasets need transaction data this indexer
+does not collect.** Liquidator identity and tips are not in account updates at
+any slot. The plan assumed an account index implied them. Either the subscription
+grows a transaction stream, or Artefact 2 scopes to health distribution — which
+is genuinely well covered (163,184 snapshots, 140,185 accounts) up to the
+truncation.
+
+Also corrected in passing: Reserve decode rate is **100%** on recent slots. The
+44% figure computed earlier today was pre-Aug-7 history, not a defect. Worth
+catching before it reached a published number.
+
+### Still open
+
+- **Deploy is blocked**, not by code. The redeploy command was denied by the
+  permission classifier; production is still writing empty rows until it runs.
+  Image with both fixes is building.
+- `bin/snapshot` to re-establish current Obligation state, after deploy.
+- Cold path against production, hard Aug 19 deadline.
+- Insights brief, still blocked on Obligation data flowing.
+- The transaction-stream scoping decision for Artefact 2.
