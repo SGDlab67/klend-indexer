@@ -14,7 +14,7 @@ use yellowstone_grpc_proto::geyser::{
     subscribe_update::UpdateOneof,
     subscribe_request_filter_accounts_filter::Filter as FilterVariant,
     subscribe_request_filter_accounts_filter_memcmp::Data as MemcmpData,
-    CommitmentLevel, SubscribeRequest, SubscribeRequestAccountsDataSlice,
+    CommitmentLevel, SubscribeRequest,
     SubscribeRequestFilterAccounts, SubscribeRequestFilterAccountsFilter,
     SubscribeRequestFilterAccountsFilterMemcmp, SubscribeRequestFilterSlots,
 };
@@ -319,15 +319,40 @@ fn build_request(from_slot: Option<u64>) -> SubscribeRequest {
         accounts,
         slots,
 
-        // ⚠️ accounts_data_slice is REQUEST-level (not per-filter), so all
-        // matched accounts share the same trim.  4664 = full LendingMarket wire
-        // size (8-byte discriminator + 4656-byte struct); LendingMarket decode
-        // requires the full payload.  Obligation (3344B) and Reserve (8624B)
-        // also share this trim; Reserves are cut from 8624→4664 (~46% savings).
-        accounts_data_slice: vec![SubscribeRequestAccountsDataSlice {
-            offset: 0,
-            length: 4664,
-        }],
+        // ⚠️ NO accounts_data_slice. Removed 2026-08-10 after it silently
+        // destroyed 44 hours of Obligation data.
+        //
+        // It was `{ offset: 0, length: 4664 }`, sized to LendingMarket's wire
+        // format so that decode would get the full payload, and it did cut
+        // Reserve from 8624 to 4664. What the comment here used to assert — that
+        // Obligation "also shares this trim" — is false. The slice is
+        // REQUEST-level, and Yellowstone returns an EMPTY payload for any
+        // account SHORTER than the requested slice rather than a partial one.
+        //
+        // Obligation is 3344 bytes. From the moment this shipped, every
+        // Obligation arrived with zero-length data, fell through
+        // `AccountKind::from` to `untagged:0b`, and was stored as an empty row
+        // that no decode could ever recover. Measured at the cutover slot
+        // 437903892: Reserve 4664B still flowing, Obligation absent entirely,
+        // and 17,119 zero-byte rows whose pubkeys are 82% previously-seen
+        // Obligations. UserMetadata (1032B) went the same way.
+        //
+        // Nothing caught it. The container stayed Up, the freshness watchdog
+        // stayed green because Reserves kept landing, and the dashboard read
+        // "live" — the loss was a third of the dataset, not a stall.
+        //
+        // The requirements cannot be met by ONE request-level slice: Obligation
+        // needs ≤3344 available and LendingMarket decode needs 4664. Any single
+        // value breaks one of them. So the slice goes.
+        //
+        // The saving it bought is measurably worthless: Alchemy sits at 15,540
+        // of 66,666,667 compute units, 0.02% of the limit. Reserve returns to
+        // 8624B for roughly +60% stream bandwidth against a quota that is
+        // essentially untouched. If bandwidth ever does matter, the correct fix
+        // is one subscription per account type — each with its own slice — not
+        // a shared trim sized to the largest.
+
+        // ── end accounts_data_slice ──
 
         // CONFIRMED: supermajority voted, not finalized. PROCESSED rolls back on
         // forks; FINALIZED is ~13s behind. Fork handling lands in Phase 1.
