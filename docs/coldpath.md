@@ -134,11 +134,67 @@ The fixture was shaped to have known answers:
 - Fixture pubkeys were null-padded, i.e. exactly the truncation case, and came
   back as full 44-character base58.
 
-## 7. Not done yet
+## 7. Production runbook (the Aug 19 deadline)
 
-- **Never run against ClickHouse Cloud.** The service's IP access list holds one
-  entry, the VM, and that VM is an e2-micro that cannot compile Rust. Production
-  export needs a container build, like the indexer's.
+ClickHouse Cloud credits expire **2026-08-19**. Anything not exported by then is
+gone. The export must run **on the VM**: it is the only host on the service's IP
+access list, and it cannot compile Rust, so the binaries ship in the image
+(`25e226c`) rather than being built there.
+
+Run it from the same image the indexer uses, overriding the entrypoint. The
+indexer keeps running throughout; the export is a reader.
+
+```bash
+# On the VM. /run/klend-indexer.env is written by gce-startup.sh into tmpfs and
+# holds CLICKHOUSE_URL/USER/PASSWORD/SECURE. It does NOT survive a reboot: if it
+# is missing, re-run the startup script before the export rather than recreating
+# it by hand, or the secret ends up on disk.
+sudo mkdir -p /var/klend/parquet && sudo chown 10001 /var/klend/parquet
+
+docker run --rm \
+  --entrypoint /usr/local/bin/klend-parquet-export \
+  --env-file /run/klend-indexer.env \
+  -e KLEND_PARQUET_DIR=/out \
+  -v /var/klend/parquet:/out \
+  us-central1-docker.pkg.dev/agentbiz-sungodlab/klend/klend-indexer:latest
+```
+
+`/var` on Container-Optimized OS is mounted `noexec`, which blocks execution and
+not writes, so it is a valid target for output. Disk is the constraint to check
+first: an e2-micro's boot disk is small and the export writes before it uploads.
+
+Then push to object storage and verify the round trip rather than assuming it:
+
+```bash
+gsutil -m rsync -r /var/klend/parquet gs://<bucket>/klend/account_updates/
+gsutil du -sh gs://<bucket>/klend/account_updates/
+```
+
+Verify the export against the source before trusting it. Row counts must agree
+per partition, and the `FINAL` collapse means the Parquet count will be **lower**
+than the raw table count. That difference is the point of the export, so check it
+is the expected difference rather than checking it is zero:
+
+```bash
+docker run --rm --entrypoint /usr/local/bin/klend-coldquery \
+  -e KLEND_PARQUET_DIR=/out -v /var/klend/parquet:/out \
+  us-central1-docker.pkg.dev/agentbiz-sungodlab/klend/klend-indexer:latest gaps
+```
+
+The `gaps` output must agree with `klend.slot_gaps`, which as of 2026-08-09 holds
+exactly one entry (437,313,969 – 437,387,843). Disagreement is a defect in one of
+the two, not a matter of opinion.
+
+**Export the snapshots too.** `klend.obligation_snapshots` (163,184 rows) is a
+separate table and is not covered by the `account_updates` export path. It is the
+table Artefact 2 is actually built on. Currently unhandled.
+
+## 8. Not done yet
+
+- **Never yet run against ClickHouse Cloud.** The binaries now ship in the image,
+  so the blocker is a command that has not been run, not missing capability.
+- **`obligation_snapshots` has no export path.** See above; this is the gap that
+  matters most for Artefact 2.
 - **Output is local disk, not object storage.** `object_store` with a GCS
   backend is the intended target and the layout is already compatible.
 - **Compression is unmeasured on real payloads.** ZSTD level 3 barely dented
