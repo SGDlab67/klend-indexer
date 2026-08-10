@@ -21,6 +21,7 @@ use yellowstone_grpc_proto::geyser::{
 
 mod ch;
 mod decode;
+mod payload;
 mod resume;
 mod schema;
 
@@ -472,6 +473,10 @@ async fn main() -> Result<()> {
     // 456-slot span in one sample), so only the span is a clock.
     let mut slots_with_updates: u64 = 0;
     let mut reconnects: u64 = 0;
+    // Watches payload SHAPE, which every other guard here is blind to: they all
+    // watch whether data is moving. See src/payload.rs for why a fault can be
+    // invisible to all of them at once.
+    let mut payload_guard = payload::PayloadGuard::new();
 
     // ── Runtime lag / liveness state ──
     // `tip_slot`: newest slot the chain has reached, from the slots subscription.
@@ -628,6 +633,29 @@ async fn main() -> Result<()> {
 
                             *tally.entry((kind, data_len)).or_insert(0) += 1;
                             total_bytes += data_len as u64;
+
+                            // Shape check before anything is stored. A funded account
+                            // with a zero-length payload is not something the chain
+                            // produces, so this needs no threshold and no warm-up.
+                            match payload_guard.observe(update.slot, info.lamports, data_len) {
+                                payload::GuardAction::Quiet => {}
+                                payload::GuardAction::AlarmFirst => {
+                                    eprintln!(
+                                        "{}",
+                                        payload::alarm_text(
+                                            update.slot,
+                                            &bs58::encode(&info.pubkey).into_string(),
+                                        )
+                                    );
+                                }
+                                payload::GuardAction::AlarmRepeat { total } => {
+                                    eprintln!(
+                                        "PAYLOAD SHAPE FAULT continuing: {total} funded accounts \
+                                         have arrived empty; still destroying data at slot={}",
+                                        update.slot,
+                                    );
+                                }
+                            }
 
                             // Updates arrive in slot order, so a change in `update.slot`
                             // marks a boundary — no set of seen slots to hold in memory.
@@ -1045,6 +1073,17 @@ async fn main() -> Result<()> {
             100.0 * count as f64 / total_updates as f64
         };
         eprintln!("{kind:<22} {len:>9} {count:>8} {share:>6.2}%");
+    }
+
+    // Last line, so it is the one still on screen after a long run — and loud
+    // when it is bad, because this is the summary a human actually reads.
+    if payload_guard.is_firing() {
+        eprintln!(
+            "PAYLOAD SHAPE FAULT: {payload_guard}. {} updates were stored with no payload.",
+            payload_guard.impossible_count(),
+        );
+    } else {
+        eprintln!("payload shape: {payload_guard}");
     }
 
     Ok(())
