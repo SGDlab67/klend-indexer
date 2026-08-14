@@ -45,13 +45,28 @@ write, so a quiet live stream is normal, not broken).
 - Slot density: 8.40%
 - Data-slice incident: 64,650 rows lost, 4,385 accounts (3,175 obligations), 158.91h
 
-## Parquet export — NOT YET DONE
+## Parquet export — DONE
 
 The last-resort offline dataset (account_updates + obligation_snapshots as
-Parquet) has not been produced. The export OOMs on the e2-micro (966MB RAM); a
-2GB swapfile is now in place on the VM but the export is still impractically slow
-there. Three paths forward: (1) export on this Mac (M4, 32GB) after a temporary
-ClickHouse IP-allowlist entry; (2) resize the VM temporarily; (3) let it grind on
-the VM overnight (swap already configured). See NOTES.md "Day 9 (cont.)",
-docs/coldpath.md §7, and deploy/run-parquet-export.sh (a ready runbook). The
-deadline is the ClickHouse credit expiry 2026-08-19, not demo day itself.
+Parquet) has been exported and lives in two places:
+
+- **Local:** `demo/parquet/` (gitignored) — account_updates 932,930 rows in 3
+  partitions, obligation_snapshots 163,533 rows in 2 partitions, ~91 MB total.
+- **GCS:** `gs://klend-indexer-dashboard/klend-parquet/` (durable; survives the
+  2026-08-19 ClickHouse credit expiry).
+
+Verified: `coldquery gaps` derives the one logged gap (437,313,969 → 437,387,843,
+73,873 slots) from the data, matching `klend.slot_gaps` exactly.
+
+Query it offline with:
+
+  KLEND_PARQUET_DIR=demo/parquet ./target/debug/coldquery sql "SELECT ..."
+  KLEND_PARQUET_DIR=demo/parquet ./target/debug/coldquery activity
+  KLEND_PARQUET_DIR=demo/parquet ./target/debug/coldquery gaps
+
+Note: the export ran against the LIVE stream (~65s window), so the exporter's
+"DEFECT: source reported N but M exported" line is a false positive from the
+writer racing the export (~29 new rows landed mid-export), not a data-integrity
+bug. See NOTES.md "Day 9 (cont. II)". The e2-micro cannot run this export (OOMs);
+it needs a real-RAM host and, unless run on the VM with swap, a temporary
+allowlist entry like this run used.

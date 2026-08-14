@@ -1995,3 +1995,28 @@ Correction to the Day 9 deploy entry, from re-deriving against the live DB: the
 account types (UserMetadata, and obligations first seen during the incident and
 therefore never decoded). The loss window is 158.91h (572,089s) by first-to-last
 lost row, not 158.94h.
+
+## Day 9 (cont. II) — the Parquet export, done on the Mac (2026-08-14)
+
+The export that would not fit the e2-micro was run on the Mac after a temporary
+ClickHouse IP-allowlist entry. 65 seconds start to finish, versus the VM's
+OOM-and-grind. account_updates 932,930 rows in 3 partitions, obligation_snapshots
+163,533 rows in 2 partitions, ~91MB of Parquet from 4.25GB of raw. Uploaded to
+gs://klend-indexer-dashboard/klend-parquet/; local copy in demo/parquet/.
+
+Verified the way that matters: `coldquery gaps` derives the gap from the data and
+reports 437,313,969 → 437,387,843 (73,873 slots), matching klend.slot_gaps
+exactly. The retrospective audit and the live detector agree.
+
+One finding worth recording: the exporter printed a DEFECT — "source reported
+932,901 rows but 932,930 were exported". Not a defect. The export ran against a
+LIVE stream; the source count is a point-in-time snapshot and the stream added
+~29 rows during the ~65s export. The DEFECT guard assumes a static source and
+false-positives on a live one. Harmless for a demo snapshot, but the guard's
+wording ("FINAL can only ever collapse rows") only holds for a closed table. A
+future export should either pause ingest, snapshot a slot bound, or accept and
+reconcile the delta.
+
+Lesson, restated with evidence: the e2-micro is sized for a few-KB/s stream, not
+for a 4.25GB Arrow export. coldpath.md §7's "run it on the VM" assumption is wrong
+for this host. A real-RAM host with a temporary allowlist entry is the path.

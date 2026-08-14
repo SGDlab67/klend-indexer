@@ -11,6 +11,7 @@
 # Cold-path Parquet output. A derived copy of ClickHouse, reproducible by
 # re-running bin/parquet_export, and large: the payload column dominates.
 /parquet
+/demo/parquet
 
 # OS / editor noise
 .DS_Store
