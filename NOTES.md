@@ -1874,3 +1874,70 @@ being run on the VM. **Distance from "fixed" to "deployed" is not zero, and
 nothing in the repository measures it.** That is the same shape as the seven
 unarmed guards, one layer further out: the artifact is correct, built,
 published, and still not reached.
+
+## Day 9 — the slice fix deployed, and the loss window closes (2026-08-14)
+
+Task 1 of demo prep: deploy the already-built fix and verify the empty-row bleed
+stopped. Done. The loss is frozen at its final numbers, and the deploy was the
+one command the Day 8 cont. V entry said was missing.
+
+### The deploy
+
+The fix image (Cloud Build 20e6f526, digest sha256:45653da...) had sat in
+Artifact Registry since 2026-08-10 while the VM kept running the buggy image: the
+running container was created 2026-08-08T02:03:11Z, the exact minute the slice bug
+went live, image ID 9319a815... (the local :latest tag was 9d51dc60, not the fix).
+
+Deploy was the documented redeploy path, `sudo google_metadata_script_runner
+startup`, which pulled :latest and relaunched:
+
+| | image ID | created |
+|---|---|---|
+| before | 9319a815... | 2026-08-08T02:03:11Z |
+| after | 0a71acc8... | 2026-08-14T16:58:29Z |
+
+:latest now resolves to the fix digest sha256:45653da...; the old 9d51dc60 is a
+dangling image.
+
+### Verified, not assumed
+
+- Behavioral: the last 10 min of Obligation rows are data_len=3344, and
+  data_len=0 is absent. First healthy Obligation after deploy landed at slot
+  439,264,851.
+- Payload guard active: the fix binary carries the guard's alarm strings
+  ("PAYLOAD SHAPE FAULT" x3, "SILENTLY DESTROYED", "accounts_data_slice",
+  "src/payload.rs"). It stays silent, correctly, because the slice is gone and no
+  funded-empty payload arrives.
+- Watchdog: `systemctl is-active klend-watchdog.service` -> active.
+- Health check: `deploy/health-check.sh` exits 0, HEALTHY (lag 2s, rate 1.03/s).
+
+### The bleed stopped (measured twice, ~26 min apart)
+
+| measured_at (UTC) | lost_rows (data_len=0 AND lamports>0) | total_rows | max_slot |
+|---|---|---|---|
+| 17:00:29 | 64,650 | 930,208 | 439,265,125 |
+| 17:26:43 | 64,650 | 931,758 | 439,268,886 |
+
+lost_rows frozen at 64,650 while total_rows and max_slot advance: the pipeline is
+alive and the empty-row bleed is over.
+
+### The final loss window
+
+- Start: slot 437,903,892 (2026-08-08 02:02 UTC), the clean cutover.
+- End: slot 439,264,851 (2026-08-14 16:58 UTC), first healthy Obligation post-fix.
+- Duration: 158.94 hours (6 days 14h 56m). Slot span 1,360,959.
+- Lost rows: 64,650 (all funded-but-empty, lamports > 0, zero exceptions).
+- Affected obligations: 4,385 distinct pubkeys.
+
+### The lesson, now with a number on it
+
+"Distance from fixed to deployed is not zero." The fix was committed 08-08, built
+into an image 08-10, and deployed 08-14. Four days and roughly 40,000 more empty
+rows because one command had not been run on the VM. The prior blocker was a
+permission classifier denying the redeploy command, not any technical fault: a
+process gap, closed by the operator running it directly.
+
+Correction, stated openly: the 08-10 entry (and the task brief) said the fix was
+"pushed". It is committed locally and the image is in Artifact Registry, but it
+was never pushed to GitHub (origin/main remains 23 commits behind HEAD). The
+deploy did not need the push; the image is the deployable artifact.
