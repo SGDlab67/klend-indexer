@@ -4,8 +4,9 @@ Demo day 2026-08-17. 7 minutes live + 3 minutes Q&A.
 Audience: instructors + peers, mixed technical depth.
 Judged on Idea / Architecture / Technical implementation / Presentation.
 
-Numbers in [brackets] are placeholders. Fill from demo/numbers.md when Task 3 lands.
-Every number on stage must come from a real query or log, never an estimate.
+Numbers filled 2026-08-14 from demo/numbers.md (live queries + logs). These advance as
+slots accrue; refresh from demo/numbers.md before the run. Every number on stage comes
+from a real query or log, never an estimate.
 
 ---
 
@@ -33,8 +34,8 @@ can ask questions about protocol behavior that no warehouse can answer today."
 Then one sentence on what it is, plainly:
 
 "It is a Rust indexer. It subscribes to a Yellowstone gRPC stream, decodes Kamino's
-lending accounts into typed rows, and writes them to ClickHouse. [N] rows ingested,
-[unique obligations] obligations tracked, running continuously since [date]."
+lending accounts into typed rows, and writes them to ClickHouse. 931,073 rows ingested,
+140,196 obligations tracked, running continuously since August 5."
 
 ---
 
@@ -66,7 +67,7 @@ audience.
 ## 2:30-5:00 — Demo (query over history; the stream is garnish)
 
 The stored data carries the demo. The live stream proves it is real. Do not let a
-quiet stretch on the live stream stall you: only about 6.5% of slots carry any
+quiet stretch on the live stream stall you: only about 8.4% of slots carry any
 Kamino update, so 30+ seconds of nothing is normal, not broken. Pre-say that.
 
 Sequence:
@@ -78,18 +79,18 @@ Sequence:
 
 2. Headline query one: health-factor distribution.
    "This is the current health of every tracked obligation. Median health factor
-   is [median]. [at_risk] positions sit below liquidation threshold right now."
+   is 1.52. 5 positions sit below liquidation threshold right now."
    The risk view (lowest health factors first) is the legible one for a
    non-specialist: "these are the accounts closest to liquidation."
 
 3. Headline query two: one obligation's history by pubkey.
-   "Here is a single obligation across [N] days: every deposit, borrow, and health
+   "Here is a single obligation across 8.7 days: every deposit, borrow, and health
    change, in order. This is the thing a warehouse cannot give you: the full
    per-account timeline, not a point-in-time balance."
 
 4. Headline query three: row counts / ingest stats.
-   "[total_rows] rows. [obligation_snapshots] decoded snapshots. Ingest lag [lag]
-   seconds. This is [days] days of continuous accumulation."
+   "931,073 rows. 163,378 decoded snapshots. Ingest lag 2
+   seconds. This is 9.7 days of accumulation."
 
 Keep the demo mechanical. Rehearse the queries until they are muscle memory so the
 narration runs itself.
@@ -102,7 +103,7 @@ narration runs itself.
 bandwidth. It was sized for the Reserve account. But the slice is applied at the
 request level, and Yellowstone returns an empty payload for any account shorter
 than the slice. Obligations are 3,344 bytes, so from slot 437,903,892 every
-Obligation arrived empty. For [hours] hours the pipeline wrote garbage while every
+Obligation arrived empty. For 158 hours, almost six and a half days, the pipeline wrote garbage while every
 monitor stayed green: the checkpoint advanced, freshness stayed at seconds, no slot
 was missed. Throughput was never the problem, so no liveness signal saw it. The
 data was just gone.
@@ -111,14 +112,14 @@ I found it by auditing the data distribution, not by watching a monitor: one
 account type's max slot froze while the others advanced. I removed the slice, and I
 added a payload-shape guard: a funded account with a zero-length payload is a shape
 the chain does not produce, so it needs no threshold, and it would have fired on
-the first Obligation, [hours] earlier. [N] rows lost, unrecoverable. The lesson:
+the first Obligation, six and a half days earlier. 64,650 rows lost, unrecoverable. The lesson:
 throughput is not integrity."
 
 This honest-failure-plus-systematic-fix beat is the strongest seniority signal you
 can send in 60 seconds. Do not soften it.
 
 Close the section with the money numbers:
-"RPC spend is about [$] a month. Measured throughput is [kb] KB/s. The cost
+"RPC spend is about $1 to $2 a month. Measured throughput is 7.45 KB/s. The cost
 problem I actually had was ClickHouse, not the stream, and that is a different
 lesson."
 
@@ -152,7 +153,7 @@ End there. Do not say thanks.
    replay and the store collapses it. It is on the roadmap to record explicitly.
 
 3. What did this cost?
-   The metered upstream is about [$] a month of RPC. The real cost surprise was
+   The metered upstream is about $1 to $2 a month of RPC. The real cost surprise was
    ClickHouse Cloud at $18/day, set by write cadence, not volume; the data is
    being exported to Parquet before the credits lapse Aug 19.
 
@@ -164,7 +165,7 @@ End there. Do not say thanks.
 
 5. What was the hardest bug?
    The data-slice incident. Not because it was hard to find, but because every
-   guard was green while it destroyed data for [hours] hours. It forced the lesson
+   guard was green while it destroyed data for 158 hours. It forced the lesson
    that a monitoring suite built from liveness signals is blind to a pipeline that
    is working perfectly and producing garbage.
 
