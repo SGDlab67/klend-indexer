@@ -1941,3 +1941,57 @@ Correction, stated openly: the 08-10 entry (and the task brief) said the fix was
 "pushed". It is committed locally and the image is in Artifact Registry, but it
 was never pushed to GitHub (origin/main remains 23 commits behind HEAD). The
 deploy did not need the push; the image is the deployable artifact.
+
+## Day 9 (cont.) — demo fallback capture, and the numbers sheet (2026-08-14)
+
+After the deploy verified, the rest of demo prep. Three subagents ran in parallel;
+two hit the 600s subagent timeout (a process limit worth naming: a 10-minute
+subagent budget cannot contain a 20-minute verification wait, a 150MB browser
+download, or a 4GB export on a 1GB box), so the orchestrator finished those
+halves directly.
+
+### The fallback capture (Task 2)
+
+`demo/` now holds a self-contained fallback: a 42s screen recording of the live
+dashboard with the liveness dot green, full-page plus five per-view screenshots,
+and `demo/queries.sql` with the three headline queries, all tested against the
+read-only user (`klend_ro`). Result snapshots in `demo/results/`.
+
+The queries:
+- (A) health-factor distribution: ~76k valid snapshots, median ~1.52, 5 at-risk.
+- (B) one obligation's history: `BYojGuT56e2...`, 11,169 snapshots over ~8.7 days.
+- (C) row counts / ingest stats.
+
+Finding worth recording: `klend_ro` caps `max_result_rows=1000`, so the full
+11k-row obligation history cannot come back in one shot; it is paged with a
+(slot, write_version) cursor. Documented in queries.sql so the next person does
+not rediscover it.
+
+### The Parquet export does not fit the e2-micro
+
+The last-resort Parquet export (`docs/coldpath.md` §7) OOMs on the VM: the e2-micro
+has 966MB RAM and `klend-parquet-export` loads a full partition into memory. The
+first run was OOM-killed; after adding a 2GB swapfile it ran but was still on the
+first partition 8 minutes in. Killed to protect the indexer (the export was eating
+1.9GB of swap on the box that runs production ingest).
+
+Lesson: coldpath.md §7 assumed the export runs on the indexer host, but the host
+was chosen for a few-KB/s stream, not for a 4.25GB Arrow export. The three real
+paths are: a temporary IP-allowlist entry + export on the Mac (M4, 32GB), a
+temporary VM resize, or an overnight grind (swap is now in place). Deadline is the
+credit expiry 2026-08-19, not demo day. A ready runbook lives at
+`deploy/run-parquet-export.sh`.
+
+### The numbers sheet (Task 3)
+
+`demo/numbers.md` — every number query-derived or log/billing-cited. Headline:
+931,073 rows; 140,196 obligations ever-seen (56,990 active); ~9.7 days with one
+logged 8h40m gap; 3s ingest lag; ~7.45 KB/s post-fix; ~$1-2/mo RPC; 8.40% slot
+density; and the incident: 64,650 rows lost, 4,385 accounts (3,175 confirmed
+obligations), 158.91h.
+
+Correction to the Day 9 deploy entry, from re-deriving against the live DB: the
+4,385 "affected obligations" are 3,175 confirmed obligations plus 1,209 other
+account types (UserMetadata, and obligations first seen during the incident and
+therefore never decoded). The loss window is 158.91h (572,089s) by first-to-last
+lost row, not 158.94h.

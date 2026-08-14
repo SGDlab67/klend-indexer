@@ -1,0 +1,4 @@
+# klend-indexer demo result (C) — row counts / ingest stats
+# run as klend_ro via deploy/ch-remote.sh, captured 2026-08-14 10:22:02
+# columns: total_rows distinct_pubkeys latest_slot checkpoint ingest_age_s unfilled_gaps snap_rows
+931534	142541	439268196	439268196	2	1	163378

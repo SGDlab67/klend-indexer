@@ -1,0 +1,5 @@
+# klend-indexer demo result (A) — health-factor distribution over accumulated history, quantiles
+# run as klend_ro via deploy/ch-remote.sh, captured 2026-08-14 10:22:02
+# columns: valid_snapshots min_health p10_health p25_health median_health p75_health p90_health p99_health max_health at_risk_below_1p05 at_risk_share
+# health = health_factor_bps / 10^6; sentinel u64::MAX and 0 excluded; at_risk = health < 1.05
+76209	1.0241	1.2682	1.3308	1.5205	2.4116	6.2687	193152.5704	1314699516859.6519	5	0.0001
