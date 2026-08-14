@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>klend-indexer · demo day</title>
+<style>
+  :root{
+    --bg:#060b18; --card:#0b1528; --card2:#0f1d38;
+    --border:rgba(0,229,255,.10); --border2:rgba(0,229,255,.22);
+    --cyan:#00e5ff; --cyan-dim:#007a8f;
+    --white:#e8edf5; --text:#8494a8; --dim:#546478;
+    --green:#34d399; --amber:#f59e0b; --red:#ff4d6a; --purple:#a78bfa;
+    --mono:'SF Mono','Fira Code','JetBrains Mono',monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    background:var(--bg); color:var(--white); font-family:var(--sans);
+    overflow:hidden; line-height:1.5; -webkit-font-smoothing:antialiased;
+  }
+  body::before{
+    content:''; position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(ellipse 80% 60% at 15% 10%, rgba(0,229,255,.05) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 50% at 85% 90%, rgba(0,140,200,.04) 0%, transparent 60%);
+  }
+
+  /* progress + chrome */
+  #bar{position:fixed; top:0; left:0; height:2px; background:var(--cyan); z-index:50;
+       box-shadow:0 0 12px var(--cyan); transition:width .3s ease}
+  #counter{position:fixed; bottom:20px; right:26px; z-index:50; font-family:var(--mono);
+       font-size:12px; color:var(--dim); letter-spacing:.05em}
+  #hint{position:fixed; bottom:20px; left:26px; z-index:50; font-family:var(--mono);
+       font-size:11px; color:var(--dim); letter-spacing:.03em}
+
+  .deck{position:relative; z-index:1; width:100%; height:100%}
+  .slide{
+    position:absolute; inset:0; display:none;
+    padding:7vh 8vw; flex-direction:column; justify-content:center;
+    opacity:0; transition:opacity .35s ease;
+  }
+  .slide.active{display:flex; opacity:1}
+
+  .kicker{font-family:var(--mono); font-size:12px; letter-spacing:.22em;
+       text-transform:uppercase; color:var(--cyan-dim); margin-bottom:2.2vh}
+  h1{font-size:clamp(40px,7vw,84px); font-weight:700; letter-spacing:-.02em; line-height:1.02}
+  h2{font-size:clamp(30px,4.6vw,54px); font-weight:700; letter-spacing:-.015em; line-height:1.08; margin-bottom:3vh}
+  .sub{font-size:clamp(18px,2.3vw,26px); color:var(--text); font-weight:400; max-width:62ch}
+  .accent{color:var(--cyan)}
+  .lead{margin-top:3vh; font-size:clamp(15px,1.7vw,19px); color:var(--dim); max-width:70ch}
+  .small{font-size:13px; color:var(--dim)}
+  .foot{position:absolute; bottom:4.5vh; font-size:12px; color:var(--dim); font-family:var(--mono)}
+
+  /* title slide */
+  .title-sub{font-size:clamp(17px,2.2vw,24px); color:var(--text); margin-top:1.6vh; max-width:52ch}
+  .title-meta{margin-top:6vh; display:flex; gap:3vw; flex-wrap:wrap; font-family:var(--mono);
+       font-size:14px; color:var(--dim); letter-spacing:.03em}
+  .title-meta b{color:var(--text); font-weight:500}
+
+  /* stat grid */
+  .grid{display:grid; gap:1.4vw; margin-top:4vh}
+  .grid.cols3{grid-template-columns:repeat(3,1fr)}
+  .grid.cols4{grid-template-columns:repeat(4,1fr)}
+  .stat{background:var(--card); border:1px solid var(--border); border-radius:14px;
+       padding:2.6vh 1.6vw; transition:border-color .3s}
+  .stat:hover{border-color:var(--border2)}
+  .stat .n{font-family:var(--mono); font-size:clamp(26px,3.4vw,40px); font-weight:700;
+       color:var(--cyan); letter-spacing:-.02em; line-height:1.1}
+  .stat .l{font-size:13px; color:var(--text); margin-top:.7vh; line-height:1.4}
+  .stat .s{font-size:11px; color:var(--dim); margin-top:.4vh}
+
+  /* architecture */
+  .flow{display:flex; align-items:stretch; gap:0; margin-top:3vh}
+  .node{flex:1; background:var(--card); border:1px solid var(--border); border-radius:12px;
+       padding:2.4vh 1.1vw; min-width:0}
+  .node .idx{font-family:var(--mono); font-size:11px; color:var(--cyan-dim); letter-spacing:.15em}
+  .node .t{font-weight:600; font-size:clamp(15px,1.5vw,19px); margin-top:.6vh; color:var(--white)}
+  .node .d{font-size:12.5px; color:var(--text); margin-top:.6vh; line-height:1.45}
+  .node.plan{border-style:dashed}
+  .arrow{display:flex; align-items:center; justify-content:center; width:2.6vw;
+       color:var(--cyan-dim); font-size:20px; flex:0 0 auto}
+  .loop{margin-top:2vh; text-align:center; font-family:var(--mono); font-size:12.5px; color:var(--dim)}
+  .why{display:grid; grid-template-columns:repeat(3,1fr); gap:1.4vw; margin-top:3vh}
+  .card{background:var(--card); border:1px solid var(--border); border-radius:12px; padding:2.4vh 1.5vw}
+  .card h3{font-size:clamp(16px,1.7vw,20px); font-weight:600; margin-bottom:1vh}
+  .card p{font-size:13.5px; color:var(--text); line-height:1.5}
+
+  /* demo / screenshots */
+  .shot{background:var(--card); border:1px solid var(--border); border-radius:14px;
+       overflow:hidden; text-align:center}
+  .shot img{width:100%; display:block}
+  .shot .cap{font-family:var(--mono); font-size:12px; color:var(--text); padding:1.2vh 1vw}
+  .two{display:grid; grid-template-columns:1fr 1fr; gap:2vw}
+
+  /* war story */
+  .war{background:var(--card); border:1px solid var(--border); border-radius:14px;
+       padding:3.5vh 2.5vw; font-size:clamp(17px,2.1vw,23px); line-height:1.55; color:var(--white)}
+  .war .red{color:var(--red)}
+  .war .grn{color:var(--green)}
+  .callout{background:rgba(0,229,255,.05); border-left:3px solid var(--cyan);
+       padding:2.2vh 1.8vw; border-radius:0 10px 10px 0; margin-top:3vh; font-size:clamp(16px,1.9vw,21px)}
+
+  .qa{display:flex; flex-direction:column; gap:1.8vh; margin-top:3vh}
+  .qa .row{background:var(--card); border:1px solid var(--border); border-radius:10px;
+       padding:1.8vh 1.6vw}
+  .qa .q{font-weight:600; color:var(--cyan); font-size:16px}
+  .qa .a{font-size:14.5px; color:var(--text); margin-top:.6vh; line-height:1.5}
+
+  ul.plain{list-style:none; margin-top:2vh}
+  ul.plain li{position:relative; padding-left:1.8vw; margin-bottom:1.6vh;
+       font-size:clamp(15px,1.7vw,19px); color:var(--text)}
+  ul.plain li::before{content:''; position:absolute; left:0; top:.62em; width:8px; height:8px;
+       border-radius:50%; background:var(--cyan); box-shadow:0 0 8px var(--cyan)}
+  li b{color:var(--white); font-weight:600}
+</style>
+</head>
+<body>
+<div id="bar"></div>
+<div class="deck" id="deck">
+
+  <!-- 1 title -->
+  <section class="slide active">
+    <div class="kicker">demo day · 2026-08-17</div>
+    <h1>klend-indexer</h1>
+    <div class="title-sub">A real-time indexer for Kamino Lend account state on Solana,
+      built for liquidation forensics.</div>
+    <div class="title-meta">
+      <span><b>Stephen</b> · Rust / Solana</span>
+      <span>idea · architecture · implementation · presentation</span>
+    </div>
+    <div class="foot">7 minutes live + 3 minutes Q&amp;A · audience: instructors + peers</div>
+  </section>
+
+  <!-- 2 the question -->
+  <section class="slide">
+    <div class="kicker">the idea</div>
+    <h2>A question no warehouse can answer.</h2>
+    <p class="sub">In 2026 Kamino cut its liquidation penalty by 90 percent,
+      from 1 percent to 0.1 percent. What did that do to liquidators?</p>
+    <p class="lead">Public data warehouses lag Solana by minutes and flatten program
+      state into token transfers. No public dataset can measure the answer. So I built one.</p>
+    <div class="foot">the same pipeline serves three audiences: infra, trading, and risk research</div>
+  </section>
+
+  <!-- 3 what it is -->
+  <section class="slide">
+    <div class="kicker">what it is</div>
+    <h2>A Rust indexer with a real dataset behind it.</h2>
+    <p class="sub">It subscribes to a Yellowstone gRPC stream, decodes Kamino's lending
+      accounts into typed rows, and writes the full history to ClickHouse.</p>
+    <div class="grid cols3">
+      <div class="stat"><div class="n">931,073</div><div class="l">rows ingested</div><div class="s">account_updates, deduped via ReplacingMergeTree</div></div>
+      <div class="stat"><div class="n">140,196</div><div class="l">obligations tracked</div><div class="s">56,990 currently carrying debt</div></div>
+      <div class="stat"><div class="n">9.7 days</div><div class="l">of accumulation</div><div class="s">Aug 5 to Aug 14, one 8h40m gap</div></div>
+    </div>
+    <div class="foot">figures captured 2026-08-14 · they advance (sources in demo/numbers.md)</div>
+  </section>
+
+  <!-- 4 architecture -->
+  <section class="slide">
+    <div class="kicker">architecture</div>
+    <h2>One stream, five stages.</h2>
+    <div class="flow">
+      <div class="node"><div class="idx">01</div><div class="t">Solana validator</div><div class="d">mainnet-beta · one slot every 400 ms · Geyser account writes</div></div>
+      <div class="arrow">→</div>
+      <div class="node"><div class="idx">02</div><div class="t">Yellowstone gRPC</div><div class="d">owner = klend program · CONFIRMED commitment · billed by bandwidth</div></div>
+      <div class="arrow">→</div>
+      <div class="node"><div class="idx">03</div><div class="t">klend-indexer</div><div class="d">Rust + tokio · types accounts by Anchor discriminator, then batches</div></div>
+      <div class="arrow">→</div>
+      <div class="node"><div class="idx">04</div><div class="t">ClickHouse</div><div class="d">account_updates · ingest_checkpoint · native protocol</div></div>
+      <div class="arrow">⇢</div>
+      <div class="node plan"><div class="idx">05</div><div class="t">Liquidation forensics</div><div class="d">state one slot before and after, the liquidator, the tip, the bonus</div></div>
+    </div>
+    <div class="loop">↻ on reconnect, resume from the last checkpointed slot (inclusive)</div>
+    <div class="why">
+      <div class="card"><h3>Keep every version</h3><p>About 36% of updates rewrite the same account inside one slot. The key (pubkey, slot, write_version) keeps them all, because the state on both sides of an instruction is the whole product.</p></div>
+      <div class="card"><h3>Store bytes, decode later</h3><p>The raw payload is stored undecoded, so a decoding bug is replayable against history instead of unrecoverable. Yellowstone cannot re-serve an old slot.</p></div>
+      <div class="card"><h3>Duplicates, never holes</h3><p>The data batch commits before the checkpoint. A replayed insert collapses to the same row; a checkpoint ahead of its data would be a silent, permanent hole.</p></div>
+    </div>
+  </section>
+
+  <!-- 5 numbers -->
+  <section class="slide">
+    <div class="kicker">the numbers</div>
+    <h2>Measured, not estimated.</h2>
+    <div class="grid cols4">
+      <div class="stat"><div class="n">163,378</div><div class="l">decoded snapshots</div><div class="s">obligation_snapshots</div></div>
+      <div class="stat"><div class="n">2 s</div><div class="l">ingest lag now</div><div class="s">p50 4 s · p99 34 s</div></div>
+      <div class="stat"><div class="n">7.45 KB/s</div><div class="l">post-fix throughput</div><div class="s">≈ $1-2 / month RPC</div></div>
+      <div class="stat"><div class="n">8.4%</div><div class="l">slot density</div><div class="s">166,985 of 1,987,448 slots</div></div>
+      <div class="stat"><div class="n">1.52</div><div class="l">median health factor</div><div class="s">5 positions below 1.05</div></div>
+      <div class="stat"><div class="n">0.02%</div><div class="l">of RPC plan used</div><div class="s">15,540 of 66.7M CUs</div></div>
+      <div class="stat"><div class="n">64,650</div><div class="l">rows lost in the incident</div><div class="s">158.9 h · 4,385 accounts</div></div>
+      <div class="stat"><div class="n">1</div><div class="l">logged gap</div><div class="s">8h40m · 73,873 slots</div></div>
+    </div>
+    <div class="foot">every number here has a source query or log line in demo/numbers.md</div>
+  </section>
+
+  <!-- 6 demo transition -->
+  <section class="slide">
+    <div class="kicker">the demo</div>
+    <h2>Now the live system.</h2>
+    <p class="sub">A query over accumulated history, with the live stream running
+      alongside as proof it is real.</p>
+    <ul class="plain">
+      <li><b>Health-factor distribution</b> — the current health of every tracked obligation; median 1.52, five at-risk.</li>
+      <li><b>One obligation's history</b> — a single account across 8.7 days: every deposit, borrow, and health change, in order.</li>
+      <li><b>Ingest stats</b> — row counts, checkpoint, and ingest lag, from the same freshness expression the watchdog acts on.</li>
+    </ul>
+    <p class="lead">About 8.4% of slots carry any Kamino write, so a quiet live stream is
+      normal, not broken. The stored data carries the demo.</p>
+  </section>
+
+  <!-- 7 war story -->
+  <section class="slide">
+    <div class="kicker">the war story</div>
+    <h2>Throughput is not integrity.</h2>
+    <div class="war">
+      I added an <span class="accent">accounts_data_slice</span> to cut bandwidth, sized for the
+      Reserve account. The slice is applied at the request level, and Yellowstone returns an
+      empty payload for any account shorter than it. Obligations are 3,344 bytes, so from
+      slot 437,903,892 every Obligation arrived empty. For <span class="red">158 hours</span>,
+      nearly six and a half days, the pipeline wrote garbage while every monitor stayed green:
+      the checkpoint advanced, freshness stayed at seconds, no slot was missed. The data was just gone.
+    </div>
+    <div class="callout">
+      I found it by auditing the <span class="accent">data distribution</span>, not by watching a
+      monitor: one account type's max slot froze while the others advanced. I removed the slice
+      and added a payload-shape guard, a funded account with a zero-length payload is a shape the
+      chain does not produce. It would have fired on the first Obligation, six and a half days
+      earlier. <span class="red">64,650 rows lost</span>, unrecoverable.
+    </div>
+  </section>
+
+  <!-- 8 roadmap -->
+  <section class="slide">
+    <div class="kicker">next</div>
+    <h2>Where this goes.</h2>
+    <ul class="plain">
+      <li><b>Artefact 2:</b> a liquidation-forensics dataset from this history, the penalty-compression analysis the question opens.</li>
+      <li><b>Backfill:</b> fill the gap the slice created, plus archive backfill for any future downtime beyond the replay window.</li>
+      <li><b>Observability:</b> lag-behind-tip, reconnect rate, and a payload-shape guard already shipped.</li>
+    </ul>
+    <div class="callout">When Kamino cut liquidation penalties 90 percent, did liquidators
+      leave, and what did that do to protocol health? I have the data to answer that. I do not
+      know the answer yet.</div>
+  </section>
+
+  <!-- 9 Q&A -->
+  <section class="slide">
+    <div class="kicker">Q&amp;A prep</div>
+    <h2>Likely questions.</h2>
+    <div class="qa">
+      <div class="row"><div class="q">Why not just use Dune?</div><div class="a">Dune indexes transaction traces, not decoded program account state at every slot, and it applies its own abstractions. I need raw account bytes with a (pubkey, slot, write_version) history so decode is replayable and liquidation forensics can see both sides of an instruction.</div></div>
+      <div class="row"><div class="q">What happens on a re-org?</div><div class="a">I subscribe at confirmed commitment and key rows on (pubkey, slot, write_version), so a re-served slot dedupes rather than corrupts. Confirmed re-orgs are extremely rare on Solana; if one happens it looks like a normal replay and the store collapses it.</div></div>
+      <div class="row"><div class="q">What did this cost?</div><div class="a">About $1 to $2 a month of metered RPC. The real surprise was ClickHouse Cloud at $18 a day, set by write cadence, not volume. The data is exported to Parquet before the credits lapse Aug 19.</div></div>
+      <div class="row"><div class="q">Why Rust?</div><div class="a">A single low-latency decode loop over a high-rate gRPC stream. Rust gives zero-copy field access over the program's own interface crate, so decoding an account is a cast, not a parse.</div></div>
+      <div class="row"><div class="q">What was the hardest bug?</div><div class="a">The data-slice incident. Not hard to find, but every guard was green while it destroyed data for 158 hours. It forced the lesson that a monitoring suite built from liveness signals is blind to a pipeline working perfectly and producing garbage.</div></div>
+    </div>
+  </section>
+
+  <!-- 10 appendix -->
+  <section class="slide">
+    <div class="kicker">appendix · offline fallback</div>
+    <h2>If the venue wifi dies.</h2>
+    <div class="two">
+      <div class="shot"><img src="screenshots/overview.png" alt="dashboard overview"><div class="cap">overview · liveness dot</div></div>
+      <div class="shot"><img src="screenshots/risk.png" alt="risk view"><div class="cap">risk view · lowest health first</div></div>
+    </div>
+    <p class="lead" style="margin-top:2.4vh">A full 42-second recording lives in
+      <span class="accent">demo/recording/</span>, and a canned Parquet export is at
+      <span class="accent">demo/parquet/</span> plus <span class="accent">gs://klend-indexer-dashboard/klend-parquet/</span>.
+      The dashboard URL is <span class="accent">https://storage.googleapis.com/klend-indexer-dashboard/index.html</span>.</p>
+    <div class="foot">transition line: "and here is the same run, recorded."</div>
+  </section>
+
+</div>
+<div id="counter"></div>
+<div id="hint">← → to move · F fullscreen</div>
+
+<script>
+  const slides = Array.from(document.querySelectorAll('.slide'));
+  const bar = document.getElementById('bar');
+  const counter = document.getElementById('counter');
+  let i = 0;
+  function show(n){
+    i = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach((s, k) => s.classList.toggle('active', k === i));
+    bar.style.width = ((i + 1) / slides.length * 100) + '%';
+    counter.textContent = (i + 1) + ' / ' + slides.length;
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ' || e.key === 'PageDown') { e.preventDefault(); show(i + 1); }
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'PageUp') { e.preventDefault(); show(i - 1); }
+    else if (e.key === 'Home') { e.preventDefault(); show(0); }
+    else if (e.key === 'End') { e.preventDefault(); show(slides.length - 1); }
+    else if (e.key === 'f' || e.key === 'F') { if (!document.fullscreenElement) document.documentElement.requestFullscreen(); else document.exitFullscreen(); }
+  });
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('a,button,img')) return;
+    show(i + 1);
+  });
+  show(0);
+</script>
+</body>
+</html>

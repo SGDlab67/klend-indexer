@@ -13,7 +13,9 @@ deployment (post-slice-fix).
 | queries.sql | The three headline queries, tested against the klend_ro read-only user |
 | results/*.tsv | Current result snapshots for those queries |
 | numbers.md | Every demo number, each with its source query + result cited |
-| script.md | 7-minute talk track, verbatim opening, war story, Q&A prep |
+| script.md | 7-minute talk track, verbatim opening, war story, Q&A prep (numbers filled) |
+| slides.html | Self-contained presentation deck (dark, offline, keyboard nav, fullscreen) |
+| rehearsal.md | Rehearsal runbook: beats, click-by-click demo, fallback drills, pre-flight |
 
 ## The recording
 
