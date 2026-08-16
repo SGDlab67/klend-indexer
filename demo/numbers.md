@@ -1,8 +1,12 @@
 # Demo-day numbers — klend-indexer
 
-Generated 2026-08-14 from live queries against ClickHouse Cloud
-(`um7rnv0cif.us-central1.gcp.clickhouse.cloud`), run through the VM over IAP via
-`deploy/ch-remote.sh`. Demo day: 2026-08-17.
+Sections 1-7 below are the frozen 2026-08-14 audit: each number carries its exact
+SQL and result, run live against ClickHouse Cloud
+(`um7rnv0cif.us-central1.gcp.clickhouse.cloud`) through the VM over IAP via
+`deploy/ch-remote.sh`. The **Compact summary** at the bottom was refreshed
+2026-08-16 and is the source the slides and script draw from. Demo day: 2026-08-17.
+
+Refresh the compact summary anytime with `demo/refresh-numbers.sh summary`.
 
 ## How to read this
 
@@ -144,13 +148,13 @@ why a quiet live stream is normal, not broken.
 
 ## Compact summary (for the slides)
 
-1. Rows ingested: **931,073** (FINAL 931,076)
-2. Obligations tracked: **140,196** ever-seen · **56,990** active
-3. Accumulation: **≈9.7 days** total (Aug 5 → Aug 14), **one 8h40m gap** on
-   Aug 5 (73,873 slots); ~9.2 days continuous since
-4. Ingest lag: **3 s** now (distribution p50 4s / p99 34s / p99.9 58s / max 90s)
+1. Rows ingested: **1,043,542** (FINAL 1,043,545)
+2. Obligations tracked: **140,603** ever-seen · **57,083** active
+3. Accumulation: **≈11.1 days** total (Aug 5 → Aug 16), **one 8h40m gap** on
+   Aug 5 (73,873 slots); ~10.6 days continuous since
+4. Ingest lag: **4 s** now (distribution p50 4s / p99 34s / p99.9 58s / max 90s)
 5. Throughput: **≈7.45 KB/s** post-fix steady state · RPC **≈$1–2/mo** (0.02% of
    plan)
-6. Slot density: **8.40%** (166,985 of 1,987,448 slots)
+6. Slot density: **8.29%** (189,535 of 2,286,409 slots)
 7. Data-slice incident: **64,650 rows lost** · **4,385 accounts** (3,175
    obligations) · **158.91 h** · detected by data-distribution audit

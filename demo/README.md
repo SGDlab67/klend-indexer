@@ -2,7 +2,7 @@
 
 Everything here exists so that if venue wifi or the cloud path dies on stage, the
 demo still lands from local artifacts. Generated 2026-08-14 against the live
-deployment (post-slice-fix).
+deployment (post-slice-fix); headline numbers refreshed 2026-08-16.
 
 ## What's here
 
@@ -22,29 +22,36 @@ deployment (post-slice-fix).
 `demo/recording/*.webm` — a full dashboard walkthrough (overview -> risk ->
 liquidity/reserves -> system -> about) with the liveness dot green. Play it with
 any browser or `open demo/recording/*.webm`. It is the fallback if the live
-stream shows nothing on stage (expected: only ~8.4% of slots carry any klend
+stream shows nothing on stage (expected: only ~8.3% of slots carry any klend
 write, so a quiet live stream is normal, not broken).
+
+Note: recording/, screenshots/, and results/*.tsv are frozen 2026-08-14 captures,
+so they show the then-current numbers (931,073 rows, 11,169 snapshots). The
+headline numbers below are the live 2026-08-16 readings. The transition line for
+the recording covers this: "and here is the same run, recorded."
 
 ## The three headline queries (demo/queries.sql, run against klend_ro)
 
 1. **Health-factor distribution (A)** — count, min/p10/p25/median/p75/p90/p99/max
    health, plus at-risk count (health < 1.05). Result snapshot: ~76k valid
-   snapshots, median health ~1.52, 5 at-risk.
-2. **One obligation's history by pubkey (B)** — the richest obligation
-   `BYojGuT56e2TUb8PQwRyT1wL5X5Ekv4kZH1HUQgBu6Zg`, 11,169 snapshots over ~8.7 days.
-   Note: klend_ro caps results at 1000 rows, so the full history is paged with a
-   (slot, write_version) cursor; results/b_obligation_history.tsv holds all 11,169.
+   snapshots, median health ~1.51, 5 at-risk.
+2. **One obligation's history by pubkey (B)**: the richest obligation
+   `BYojGuT56e2TUb8PQwRyT1wL5X5Ekv4kZH1HUQgBu6Zg`. Now 16,538 snapshots over ~10.1
+   days (11,169 over ~8.7 days when the Aug-14 results/ snapshot was captured).
+   klend_ro caps results at 1000 rows, so the full history is paged with a
+   (slot, write_version) cursor; results/b_obligation_history.tsv holds the Aug-14
+   capture of 11,169.
 3. **Row counts / ingest stats (C)** — total rows, distinct pubkeys, latest slot,
    checkpoint, ingest lag (seconds), unfilled gaps, snapshot count.
 
 ## Headline numbers (full sourcing in numbers.md)
 
-- Rows ingested: 931,073 (FINAL 931,076)
-- Obligations: 140,196 ever-seen, 56,990 active
-- Accumulation: ~9.7 days, one logged 8h40m gap (2026-08-05)
-- Ingest lag: 3s now (distribution p50 4s / p99 34s / p99.9 58s / max 90s)
+- Rows ingested: 1,043,542 (FINAL 1,043,545)
+- Obligations: 140,603 ever-seen, 57,083 active
+- Accumulation: ~11.1 days, one logged 8h40m gap (2026-08-05)
+- Ingest lag: 4s now (distribution p50 4s / p99 34s / p99.9 58s / max 90s)
 - Throughput: ~7.45 KB/s post-fix; RPC ~$1-2/mo (0.02% of plan)
-- Slot density: 8.40%
+- Slot density: 8.3%
 - Data-slice incident: 64,650 rows lost, 4,385 accounts (3,175 obligations), 158.91h
 
 ## Parquet export — DONE

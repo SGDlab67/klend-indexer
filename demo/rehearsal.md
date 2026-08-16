@@ -3,7 +3,7 @@
 Targets: 7:00 talk + 3:00 Q&A. Audience: instructors + peers, mixed depth.
 Judged on Idea / Architecture / Technical implementation / Presentation.
 
-The full talk track is in demo/script.md (numbers filled 2026-08-14). This file is
+The full talk track is in demo/script.md (numbers filled 2026-08-16). This file is
 the operational half: what to open, the click-by-click demo, the fallback drills,
 and the pre-flight checklist.
 
@@ -29,11 +29,14 @@ the architecture slide, not the demo.
 
 1. Slides: `open demo/slides.html` in a browser. Press F for fullscreen,
    arrow keys to move, End for the appendix. No network needed; it works from disk.
-2. Dashboard (live): https://storage.googleapis.com/klend-indexer-dashboard/index.html
+2. Cue card: `open demo/cue-card.html` on a second screen (or phone). It is the
+   whole talk on one page: verbatim opening, three decisions, four demo beats,
+   war-story numbers, close, and Q&A one-liners. You never read script.md on stage.
+3. Dashboard (live): https://storage.googleapis.com/klend-indexer-dashboard/index.html
    in a second tab. The liveness dot is driven by stats.json, republished every 60s
    by the VM, so the dot and the data cannot disagree.
-3. Recording fallback: demo/recording/*.webm (42s dashboard walkthrough).
-4. Parquet fallback: demo/parquet/ locally, plus gs://klend-indexer-dashboard/klend-parquet/.
+4. Recording fallback: demo/recording/*.webm (42s dashboard walkthrough).
+5. Parquet fallback: demo/parquet/ locally, plus gs://klend-indexer-dashboard/klend-parquet/.
    Query it offline with `KLEND_PARQUET_DIR=demo/parquet ./target/debug/coldquery activity`.
 
 ---
@@ -41,7 +44,7 @@ the architecture slide, not the demo.
 ## The demo sequence (click by click, 2:30-5:00)
 
 The stored data carries the demo. The live stream proves it is real. Pre-say the
-burst fact once: "about 8.4% of slots carry any Kamino write, so a quiet stream is
+burst fact once: "about 8.3% of slots carry any Kamino write, so a quiet stream is
 normal, not broken." That inoculates you against 30 seconds of nothing.
 
 1. Switch to the dashboard tab. Point at the liveness dot and the last-write tile.
@@ -50,18 +53,18 @@ normal, not broken." That inoculates you against 30 seconds of nothing.
    pipeline is running right now.
 
 2. Health-factor distribution (headline query A). Say: "This is the current health
-   of every tracked obligation. Median health factor is 1.52. Five positions sit
+   of every tracked obligation. Median health factor is 1.51. Five positions sit
    below the liquidation threshold right now." Then point at the risk view, lowest
    health first: "these are the accounts closest to liquidation."
 
 3. One obligation's history (headline query B). Say: "Here is a single obligation
-   across 8.7 days: every deposit, borrow, and health change, in order. This is the
+   across 10.1 days: every deposit, borrow, and health change, in order. This is the
    thing a warehouse cannot give you: the full per-account timeline, not a
    point-in-time balance." (Obligation BYojGuT56e2TUb8PQwRyT1wL5X5Ekv4kZH1HUQgBu6Zg,
-   11,169 snapshots.)
+   16,538 snapshots.)
 
-4. Row counts / ingest stats (headline query C). Say: "931,073 rows. 163,378
-   decoded snapshots. Ingest lag 2 seconds. This is 9.7 days of accumulation."
+4. Row counts / ingest stats (headline query C). Say: "1,043,542 rows. 174,318
+   decoded snapshots. Ingest lag 4 seconds. This is 11 days of accumulation."
 
 Keep it mechanical. Rehearse these four until the narration runs itself, so the
 live stream can be quiet without derailing you.
@@ -81,9 +84,9 @@ live stream can be quiet without derailing you.
 
 ## Pre-flight checklist (15 minutes before)
 
-- [ ] Refresh demo/numbers.md: numbers drift as slots advance. Re-run the queries
-      in demo/queries.sql via `deploy/ch-remote.sh` and update numbers.md and the
-      slides if any headline moved by more than a rounding step.
+- [ ] Refresh the numbers: run `demo/refresh-numbers.sh summary`, paste the block
+      into demo/numbers.md, and update any headline in the slides that moved more
+      than a rounding step. This is now one command, not six manual queries.
 - [ ] Open slides, confirm fullscreen + arrow keys work, step through to the end.
 - [ ] Open the dashboard, confirm the liveness dot is green and last-write is seconds.
 - [ ] Confirm demo/recording/*.webm plays.

@@ -151,11 +151,11 @@
     <p class="sub">It subscribes to a Yellowstone gRPC stream, decodes Kamino's lending
       accounts into typed rows, and writes the full history to ClickHouse.</p>
     <div class="grid cols3">
-      <div class="stat"><div class="n">931,073</div><div class="l">rows ingested</div><div class="s">account_updates, deduped via ReplacingMergeTree</div></div>
-      <div class="stat"><div class="n">140,196</div><div class="l">obligations tracked</div><div class="s">56,990 currently carrying debt</div></div>
-      <div class="stat"><div class="n">9.7 days</div><div class="l">of accumulation</div><div class="s">Aug 5 to Aug 14, one 8h40m gap</div></div>
+      <div class="stat"><div class="n">1,043,542</div><div class="l">rows ingested</div><div class="s">account_updates, deduped via ReplacingMergeTree</div></div>
+      <div class="stat"><div class="n">140,603</div><div class="l">obligations tracked</div><div class="s">57,083 currently carrying debt</div></div>
+      <div class="stat"><div class="n">11.1 days</div><div class="l">of accumulation</div><div class="s">Aug 5 to Aug 16, one 8h40m gap</div></div>
     </div>
-    <div class="foot">figures captured 2026-08-14 · they advance (sources in demo/numbers.md)</div>
+    <div class="foot">figures captured 2026-08-16 · they advance (sources in demo/numbers.md)</div>
   </section>
 
   <!-- 4 architecture -->
@@ -186,11 +186,11 @@
     <div class="kicker">the numbers</div>
     <h2>Measured, not estimated.</h2>
     <div class="grid cols4">
-      <div class="stat"><div class="n">163,378</div><div class="l">decoded snapshots</div><div class="s">obligation_snapshots</div></div>
-      <div class="stat"><div class="n">2 s</div><div class="l">ingest lag now</div><div class="s">p50 4 s · p99 34 s</div></div>
+      <div class="stat"><div class="n">174,318</div><div class="l">decoded snapshots</div><div class="s">obligation_snapshots</div></div>
+      <div class="stat"><div class="n">4 s</div><div class="l">ingest lag now</div><div class="s">p50 4 s · p99 34 s</div></div>
       <div class="stat"><div class="n">7.45 KB/s</div><div class="l">post-fix throughput</div><div class="s">≈ $1-2 / month RPC</div></div>
-      <div class="stat"><div class="n">8.4%</div><div class="l">slot density</div><div class="s">166,985 of 1,987,448 slots</div></div>
-      <div class="stat"><div class="n">1.52</div><div class="l">median health factor</div><div class="s">5 positions below 1.05</div></div>
+      <div class="stat"><div class="n">8.3%</div><div class="l">slot density</div><div class="s">189,535 of 2,286,409 slots</div></div>
+      <div class="stat"><div class="n">1.51</div><div class="l">median health factor</div><div class="s">5 positions below 1.05</div></div>
       <div class="stat"><div class="n">0.02%</div><div class="l">of RPC plan used</div><div class="s">15,540 of 66.7M CUs</div></div>
       <div class="stat"><div class="n">64,650</div><div class="l">rows lost in the incident</div><div class="s">158.9 h · 4,385 accounts</div></div>
       <div class="stat"><div class="n">1</div><div class="l">logged gap</div><div class="s">8h40m · 73,873 slots</div></div>
@@ -205,11 +205,11 @@
     <p class="sub">A query over accumulated history, with the live stream running
       alongside as proof it is real.</p>
     <ul class="plain">
-      <li><b>Health-factor distribution</b> — the current health of every tracked obligation; median 1.52, five at-risk.</li>
-      <li><b>One obligation's history</b> — a single account across 8.7 days: every deposit, borrow, and health change, in order.</li>
+      <li><b>Health-factor distribution</b> — the current health of every tracked obligation; median 1.51, five at-risk.</li>
+      <li><b>One obligation's history</b> — a single account across 10.1 days: every deposit, borrow, and health change, in order.</li>
       <li><b>Ingest stats</b> — row counts, checkpoint, and ingest lag, from the same freshness expression the watchdog acts on.</li>
     </ul>
-    <p class="lead">About 8.4% of slots carry any Kamino write, so a quiet live stream is
+    <p class="lead">About 8.3% of slots carry any Kamino write, so a quiet live stream is
       normal, not broken. The stored data carries the demo.</p>
   </section>
 

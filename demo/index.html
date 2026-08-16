@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>klend-indexer · demo launcher</title>
+<style>
+  :root{
+    --bg:#060b18; --card:#0b1528; --card-hover:#0f1d38;
+    --border:rgba(0,229,255,.10); --border-hover:rgba(0,229,255,.22);
+    --cyan:#00e5ff; --cyan-dim:#007a8f; --cyan-glow:rgba(0,229,255,.07);
+    --white:#e8edf5; --text:#8494a8; --dim:#546478;
+    --green:#34d399; --amber:#f59e0b; --red:#ff4d6a;
+    --mono:'SF Mono','Fira Code','JetBrains Mono',monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg); color:var(--white); font-family:var(--sans);
+       min-height:100vh; line-height:1.55; -webkit-font-smoothing:antialiased;
+       padding:40px 24px 80px}
+  .wrap{max-width:880px; margin:0 auto}
+  .tag{font-family:var(--mono); font-size:12px; color:var(--cyan-dim);
+       letter-spacing:.22em; text-transform:uppercase}
+  h1{font-size:30px; letter-spacing:-.02em; margin-top:8px; font-family:var(--mono)}
+  .sub{margin-top:8px; color:var(--text); font-size:15px; max-width:60ch}
+  .sub code{font-family:var(--mono); color:var(--cyan); font-size:13px}
+  .grid{display:grid; grid-template-columns:repeat(2,1fr); gap:14px; margin-top:30px}
+  .card{
+    display:block; background:var(--card); border:1px solid var(--border);
+    border-radius:14px; padding:22px 24px; text-decoration:none; color:inherit;
+    transition:border-color .2s, background .2s, transform .2s;
+  }
+  .card:hover{border-color:var(--border-hover); background:var(--card-hover); transform:translateY(-2px)}
+  .card .k{font-size:10px; letter-spacing:1.4px; text-transform:uppercase; color:var(--cyan-dim); font-weight:600}
+  .card .t{font-size:17px; font-weight:600; margin-top:6px; color:var(--white)}
+  .card .d{font-size:13px; color:var(--text); margin-top:5px; line-height:1.5}
+  .card .u{font-family:var(--mono); font-size:11px; color:var(--dim); margin-top:10px; word-break:break-all}
+  .badge{display:inline-block; padding:2px 8px; border-radius:3px; font-size:9px; font-weight:600;
+         letter-spacing:.4px; text-transform:uppercase; margin-left:6px; vertical-align:2px}
+  .b-live{background:rgba(52,211,153,.12); color:var(--green)}
+  .b-off{background:rgba(0,229,255,.10); color:var(--cyan)}
+  .b-back{background:rgba(245,158,11,.12); color:var(--amber)}
+  .foot{margin-top:36px; padding-top:18px; border-top:1px solid var(--border);
+        font-size:12px; color:var(--dim); font-family:var(--mono); line-height:1.7}
+  .foot b{color:var(--text)}
+  @media(max-width:640px){ .grid{grid-template-columns:1fr} h1{font-size:24px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="tag">demo day · 2026-08-17 · Monday</div>
+  <h1>klend-indexer</h1>
+  <p class="sub">One page for the whole talk. Numbers captured <code>2026-08-16</code>;
+    the live dashboard keeps advancing, so the headline figures on the slides are the
+    "as of this morning" readings, and the recording is the frozen Aug-14 fallback.</p>
+
+  <div class="grid">
+    <a class="card" href="../index.html">
+      <div class="k">live system <span class="badge b-live">green dot</span></div>
+      <div class="t">Live dashboard</div>
+      <div class="d">The static export republished every 60s. Open this second, point at the liveness dot first.</div>
+      <div class="u">/index.html</div>
+    </a>
+
+    <a class="card" href="./slides.html">
+      <div class="k">the deck <span class="badge b-off">offline</span></div>
+      <div class="t">Slide deck</div>
+      <div class="d">10 slides. Arrow keys to move, F for fullscreen, End for the appendix.</div>
+      <div class="u">/demo/slides.html</div>
+    </a>
+
+    <a class="card" href="./cue-card.html">
+      <div class="k">second screen <span class="badge b-off">glance</span></div>
+      <div class="t">Speaker cue card</div>
+      <div class="d">The whole talk on one page: verbatim opening, three decisions, four demo beats, war story, Q&amp;A.</div>
+      <div class="u">/demo/cue-card.html</div>
+    </a>
+
+    <a class="card" href="./recording/dashboard-walkthrough.webm">
+      <div class="k">fallback <span class="badge b-back">if wifi dies</span></div>
+      <div class="t">Recording</div>
+      <div class="d">42s dashboard walkthrough. Transition line: "and here is the same run, recorded."</div>
+      <div class="u">/demo/recording/dashboard-walkthrough.webm</div>
+    </a>
+
+    <a class="card" href="./numbers.md">
+      <div class="k">reference</div>
+      <div class="t">Numbers sheet</div>
+      <div class="d">Every number with its source query. Compact summary at the bottom is what the slides draw from.</div>
+      <div class="u">/demo/numbers.md</div>
+    </a>
+
+    <a class="card" href="./script.md">
+      <div class="k">reference</div>
+      <div class="t">Talk script</div>
+      <div class="d">The 7-minute track, verbatim opening, war story, and Q&amp;A prep.</div>
+      <div class="u">/demo/script.md</div>
+    </a>
+
+    <a class="card" href="./rehearsal.md">
+      <div class="k">reference</div>
+      <div class="t">Rehearsal runbook</div>
+      <div class="d">Beats, click-by-click demo, fallback drills, and the 15-minute pre-flight checklist.</div>
+      <div class="u">/demo/rehearsal.md</div>
+    </a>
+
+    <a class="card" href="./README.md">
+      <div class="k">reference</div>
+      <div class="t">Package readme</div>
+      <div class="d">What every file is, and the Parquet offline fallback (gs://klend-indexer-dashboard/klend-parquet/).</div>
+      <div class="u">/demo/README.md</div>
+    </a>
+  </div>
+
+  <div class="foot">
+    <b>Monday pre-flight (15 min before):</b> open the live dashboard and confirm the dot is green and
+    last-write is seconds old · open the deck, hit F, step to the end · confirm the recording plays ·
+    phone on hotspot (backup network), laptop plugged in · numbers are readings, not constants: the one
+    number that will NOT move is the loss window (64,650 rows, 158.9h, 4,385 accounts).
+  </div>
+</div>
+</body>
+</html>

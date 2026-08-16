@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>klend-indexer · cue card</title>
+<style>
+  :root{
+    --bg:#060b18; --card:#0b1528; --card2:#0f1d38;
+    --border:rgba(0,229,255,.12); --border2:rgba(0,229,255,.28);
+    --cyan:#00e5ff; --cyan-dim:#007a8f;
+    --white:#e8edf5; --text:#aebdcd; --dim:#6a7a8c;
+    --green:#34d399; --red:#ff4d6a; --amber:#f59e0b;
+    --mono:'SF Mono','Fira Code','JetBrains Mono',monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg); color:var(--white); font-family:var(--sans);
+       padding:4vh 4vw; line-height:1.5; -webkit-font-smoothing:antialiased}
+  h1{font-size:clamp(22px,3vw,34px); letter-spacing:-.01em}
+  .tag{font-family:var(--mono); font-size:12px; color:var(--cyan-dim);
+       letter-spacing:.2em; text-transform:uppercase}
+  .grid{display:grid; grid-template-columns:repeat(3,1fr); gap:2vw; margin-top:3vh}
+  .col{background:var(--card); border:1px solid var(--border); border-radius:14px;
+       padding:2.6vh 1.6vw}
+  h2{font-size:13px; font-family:var(--mono); letter-spacing:.15em; color:var(--cyan-dim);
+     text-transform:uppercase; margin-bottom:1.6vh}
+  .line{margin-bottom:1.4vh; font-size:15px; color:var(--text)}
+  .line b{color:var(--white)}
+  .num{font-family:var(--mono); color:var(--cyan); font-weight:700}
+  .fix{font-family:var(--mono); color:var(--green); font-weight:600}
+  .warn{font-family:var(--mono); color:var(--red); font-weight:600}
+  .open{border-left:3px solid var(--cyan); padding:1.2vh 1vw; font-size:17px;
+        color:var(--white); background:rgba(0,229,255,.05); border-radius:0 8px 8px 0}
+  .qa .q{font-weight:600; color:var(--cyan); font-size:14px; margin-top:1.4vh}
+  .qa .a{font-size:13px; color:var(--dim); margin-top:.4vh}
+  .foot{margin-top:3vh; font-size:12px; color:var(--dim); font-family:var(--mono)}
+  @media print{body{background:#fff; color:#111} .col{border-color:#ccc} .open{background:#eef6f8}
+    .num,.fix,.warn{color:#036} .qa .q{color:#036}}
+</style>
+</head>
+<body>
+  <span class="tag">cue card · 7:00 + 3:00 Q&amp;A · demo day 2026-08-17</span>
+  <h1>klend-indexer</h1>
+
+  <div class="grid">
+    <div class="col">
+      <h2>Opening · 0:00-1:00 (verbatim)</h2>
+      <div class="open">"Public data warehouses lag Solana by minutes, and they flatten program
+        semantics down to token transfers. In 2026 Kamino cut its liquidation penalty by
+        ninety percent, and there is no public dataset that can measure what that did to
+        liquidators. So I built one."</div>
+      <div class="line" style="margin-top:1.4vh"><b>One sentence:</b> "A Rust indexer. Yellowstone gRPC
+        → typed rows → ClickHouse. <span class="num">1,043,542</span> rows, <span class="num">140,603</span>
+        obligations, since Aug 5."</div>
+    </div>
+
+    <div class="col">
+      <h2>Architecture · 1:00-2:30 (3 decisions)</h2>
+      <div class="line"><b>1. Raw bytes first.</b> Decode is replayable; a wrong offset is a fixable bug, not lost data.</div>
+      <div class="line"><b>2. Key (pubkey, slot, write_version).</b> ~36% of writes rewrite one account per slot. write_version keeps every intra-slot version.</div>
+      <div class="line"><b>3. Data batch, then checkpoint.</b> Prefer duplicates over holes.</div>
+    </div>
+
+    <div class="col">
+      <h2>Demo · 2:30-5:00 (4 beats)</h2>
+      <div class="line"><b>0. Dot.</b> "driven by the same freshness expression the watchdog acts on, so page and guard cannot disagree."</div>
+      <div class="line"><b>A. Health.</b> median <span class="num">1.51</span> · <span class="num">5</span> below 1.05. "closest to liquidation."</div>
+      <div class="line"><b>B. One obligation.</b> 10.1 days, 16,538 snapshots, in order. "the thing a warehouse cannot give you."</div>
+      <div class="line"><b>C. Stats.</b> <span class="num">1,043,542</span> rows · <span class="num">174,318</span> snapshots · lag <span class="num">4s</span> · <span class="num">11</span> days.</div>
+      <div class="line"><b>Pre-say:</b> "about 8.3% of slots carry any Kamino write, so a quiet stream is normal, not broken."</div>
+    </div>
+  </div>
+
+  <div class="grid" style="grid-template-columns:1fr 1fr">
+    <div class="col">
+      <h2>War story · 5:00-6:00</h2>
+      <div class="line">accounts_data_slice sized for Reserve (8,624 B). Obligations are 3,344 B, so every Obligation arrived empty from slot <span class="num">437,903,892</span>.</div>
+      <div class="line"><span class="warn">158 hours</span> of garbage, every monitor green. Throughput was never the problem, so no liveness signal saw it.</div>
+      <div class="line">Found by <b>data-distribution audit</b>: one kind's max slot froze while others advanced.</div>
+      <div class="line">Fix: payload-shape guard, a funded account with a zero-length payload is a shape the chain does not produce.</div>
+      <div class="line"><span class="fix">Fixed facts:</span> <span class="warn">64,650</span> rows lost · <span class="warn">158.91h</span> · <span class="num">4,385</span> accounts (<span class="num">3,175</span> obligations). "Throughput is not integrity."</div>
+      <div class="line"><b>Money:</b> RPC <span class="num">$1-2/mo</span> · <span class="num">7.45 KB/s</span>. "The cost problem was ClickHouse, not the stream."</div>
+    </div>
+
+    <div class="col">
+      <h2>Close + Q&amp;A · 6:00-7:00</h2>
+      <div class="open">"Next: Artefact 2, liquidation forensics. Then backfill. And the question:
+        when Kamino cut penalties ninety percent, did liquidators leave, and what did that
+        do to protocol health? I have the data. I do not know the answer yet."</div>
+      <div class="qa">
+        <div class="q">Dune?</div><div class="a">tx traces + own abstractions, not decoded account state at every slot.</div>
+        <div class="q">Re-org?</div><div class="a">confirmed commitment + (pubkey,slot,write_version) key dedupes.</div>
+        <div class="q">Cost?</div><div class="a">RPC $1-2/mo; ClickHouse $18/day was the surprise.</div>
+        <div class="q">Why Rust?</div><div class="a">zero-copy bytemuck over the program's own crate; cast not parse.</div>
+        <div class="q">Hardest bug?</div><div class="a">slice incident: green while destroying data for 158h.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">numbers captured 2026-08-16 · refresh: demo/refresh-numbers.sh · fallback line: "and here is the same run, recorded."</div>
+</body>
+</html>

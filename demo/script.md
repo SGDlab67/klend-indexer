@@ -4,7 +4,7 @@ Demo day 2026-08-17. 7 minutes live + 3 minutes Q&A.
 Audience: instructors + peers, mixed technical depth.
 Judged on Idea / Architecture / Technical implementation / Presentation.
 
-Numbers filled 2026-08-14 from demo/numbers.md (live queries + logs). These advance as
+Numbers filled 2026-08-16 from demo/numbers.md (live queries + logs). These advance as
 slots accrue; refresh from demo/numbers.md before the run. Every number on stage comes
 from a real query or log, never an estimate.
 
@@ -34,8 +34,8 @@ can ask questions about protocol behavior that no warehouse can answer today."
 Then one sentence on what it is, plainly:
 
 "It is a Rust indexer. It subscribes to a Yellowstone gRPC stream, decodes Kamino's
-lending accounts into typed rows, and writes them to ClickHouse. 931,073 rows ingested,
-140,196 obligations tracked, running continuously since August 5."
+lending accounts into typed rows, and writes them to ClickHouse. 1,043,542 rows ingested,
+140,603 obligations tracked, running continuously since August 5."
 
 ---
 
@@ -67,7 +67,7 @@ audience.
 ## 2:30-5:00 — Demo (query over history; the stream is garnish)
 
 The stored data carries the demo. The live stream proves it is real. Do not let a
-quiet stretch on the live stream stall you: only about 8.4% of slots carry any
+quiet stretch on the live stream stall you: only about 8.3% of slots carry any
 Kamino update, so 30+ seconds of nothing is normal, not broken. Pre-say that.
 
 Sequence:
@@ -79,18 +79,18 @@ Sequence:
 
 2. Headline query one: health-factor distribution.
    "This is the current health of every tracked obligation. Median health factor
-   is 1.52. 5 positions sit below liquidation threshold right now."
+   is 1.51. 5 positions sit below liquidation threshold right now."
    The risk view (lowest health factors first) is the legible one for a
    non-specialist: "these are the accounts closest to liquidation."
 
 3. Headline query two: one obligation's history by pubkey.
-   "Here is a single obligation across 8.7 days: every deposit, borrow, and health
+   "Here is a single obligation across 10.1 days: every deposit, borrow, and health
    change, in order. This is the thing a warehouse cannot give you: the full
    per-account timeline, not a point-in-time balance."
 
 4. Headline query three: row counts / ingest stats.
-   "931,073 rows. 163,378 decoded snapshots. Ingest lag 2
-   seconds. This is 9.7 days of accumulation."
+   "1,043,542 rows. 174,318 decoded snapshots. Ingest lag 4
+   seconds. This is 11 days of accumulation."
 
 Keep the demo mechanical. Rehearse the queries until they are muscle memory so the
 narration runs itself.
