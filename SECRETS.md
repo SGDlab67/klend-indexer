@@ -160,3 +160,32 @@ root-owned `chmod 600 /etc/klend-indexer.env` from the committed
 `deploy/klend-indexer.env.example` reference file, injected with `docker run
 --env-file`. Values then sit on the box's disk (root-only), which is why Secret
 Manager is the primary path.
+
+---
+
+## Legacy plaintext credentials file (retired 2026-08-17)
+
+A leftover plaintext file existed at `~/Github/clickhouse_credentials.txt`
+(outside any repo, but one `git init` away from being commit-able). It predated
+the Keychain migration and held two lines:
+
+- username: `default`
+- a password that does NOT match the current local docker password
+  (`klend-clickhouse-password`), so it is presumed to be the original
+  ClickHouse Cloud / early-local credential. Treat it as dead.
+
+Its contents were archived to the Keychain under a dedicated service so the
+mapping stays recoverable without the file:
+
+```bash
+security find-generic-password -a username -s "klend-indexer/clickhouse" -w   # -> "default"
+security find-generic-password -a password -s "klend-indexer/clickhouse" -w   # -> legacy password
+```
+
+The plaintext file was overwritten with random bytes and deleted on 2026-08-17.
+The working secrets are unaffected: local docker = `klend-clickhouse-password`
+(user `klend`), Cloud = `klend-clickhouse-cloud-password`.
+
+Retrieval discipline for the archived items is the same as everything else in
+this file: pipe the value into the consumer's stdin or a same-process env var,
+never argv, never back to disk.
